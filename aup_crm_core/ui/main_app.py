@@ -5,6 +5,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import streamlit as st
 from core.database import init_db
+from core.config_global import mostrar_estado
 from modules import clientes, oportunidades, productos, facturacion, usuarios
 from modules.auth import esta_autenticado, cerrar_sesion, obtener_usuario_actual
 from ui import sidebar, dashboard, login
@@ -29,6 +30,11 @@ def main():
     if st.sidebar.button("🚪 Cerrar Sesión"):
         cerrar_sesion()
         st.rerun()
+    
+    st.sidebar.divider()
+    
+    # Mostrar estado del sistema
+    mostrar_estado()
     
     st.sidebar.divider()
     
