@@ -105,22 +105,23 @@ def show():
     
     st.caption(f"Mostrando {len(prospectos_filtrados)} de {len(prospectos)} prospectos")
     
-    # Mostrar cada prospecto
-    for p in prospectos_filtrados:
-        mostrar_tarjeta_prospecto(p)
-    
-    # Formulario modal de agregar contacto
+    # SI hay un formulario modal abierto, mostrarlo y salir
     if "prospecto_seleccionado" in st.session_state:
         st.divider()
         agregar_contacto(
             st.session_state["prospecto_seleccionado"],
             st.session_state.get("prospecto_nombre", "")
         )
+        return  # No mostrar las tarjetas cuando hay un formulario abierto
     
-    # Formularios modales
     if "editar_prospecto" in st.session_state:
         st.divider()
         editar_prospecto(st.session_state["editar_prospecto"])
+        return  # No mostrar las tarjetas cuando hay un formulario abierto
+    
+    # Mostrar tarjetas solo si no hay formularios modales abiertos
+    for p in prospectos_filtrados:
+        mostrar_tarjeta_prospecto(p)
 
 
 def mostrar_tarjeta_prospecto(p):
