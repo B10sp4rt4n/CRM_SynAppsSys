@@ -5,7 +5,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import streamlit as st
 from core.database import init_db
-from modules import clientes, oportunidades, productos, facturacion
+from modules import clientes, oportunidades, productos, facturacion, usuarios
 from ui import sidebar, dashboard
 
 st.set_page_config(page_title="AUP CRM", layout="wide")
@@ -17,6 +17,8 @@ def main():
 
     if page == "Dashboard":
         dashboard.show()
+    elif page == "Usuarios":
+        usuarios.show()
     elif page == "Clientes":
         clientes.show()
     elif page == "Oportunidades":
