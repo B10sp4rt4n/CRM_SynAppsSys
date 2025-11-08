@@ -23,6 +23,8 @@ def init_db():
         tipo TEXT,
         nombre TEXT,
         atributos TEXT,
+        password_hash TEXT,
+        activo INTEGER DEFAULT 1,
         fecha_creacion TEXT DEFAULT CURRENT_TIMESTAMP
     )
     """)
