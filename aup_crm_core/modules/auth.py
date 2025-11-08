@@ -18,7 +18,7 @@ def verificar_credenciales(correo, password):
         SELECT * FROM aup_agentes 
         WHERE tipo='usuario' 
         AND atributos LIKE ? 
-        AND password_hash=? 
+        AND password=? 
         AND activo=1
     """, (f"%correo={correo}%", password_hash))
     
