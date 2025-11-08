@@ -4,11 +4,16 @@ from pathlib import Path
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "aup_crm.sqlite"
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except sqlite3.Error as e:
+        print(f"Error en conexión SQLite: {e}")
+        return None
 
 def init_db():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)  # crea /data si no existe
     conn = get_connection()
     cur = conn.cursor()
 
