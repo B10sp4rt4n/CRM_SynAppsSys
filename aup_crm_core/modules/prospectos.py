@@ -2,12 +2,24 @@
 """
 Módulo de Prospectos - Gestión Relacional AUP
 Manejo de estados, vigencias y conversiones
+Teléfonos diferenciados: empresa (prospecto) y personal (contacto)
 """
 
 import streamlit as st
 from datetime import date, timedelta
 from core.database import get_connection
 from core.event_logger import registrar_evento
+import re
+
+# ==========================================================
+#  🧩 FUNCIONES AUXILIARES
+# ==========================================================
+
+def obtener_valor(atributos, clave):
+    """Extrae un valor del string de atributos usando regex"""
+    match = re.search(rf"{clave}=([^;]+)", atributos or "")
+    return match.group(1) if match else "—"
+
 
 def show():
     """Interfaz principal del módulo de prospectos"""
@@ -20,7 +32,7 @@ def show():
             col1, col2 = st.columns(2)
             with col1:
                 sector = st.text_input("Sector o giro")
-                telefono = st.text_input("Teléfono")
+                telefono_empresa = st.text_input("📞 Teléfono principal de la empresa")
             with col2:
                 estado = st.selectbox("Estado inicial", ["Nuevo", "En negociación", "Cerrado", "Perdido"])
                 vigencia_dias = st.number_input("Vigencia (días)", min_value=1, value=90)
@@ -32,7 +44,7 @@ def show():
                 if conn:
                     cur = conn.cursor()
                     vigencia = date.today() + timedelta(days=int(vigencia_dias))
-                    atributos = f"sector={sector};telefono={telefono};estado={estado};vigencia={vigencia}"
+                    atributos = f"sector={sector};telefono_empresa={telefono_empresa};estado={estado};vigencia={vigencia}"
                     cur.execute("""
                         INSERT INTO aup_agentes (tipo, nombre, atributos, activo)
                         VALUES (?, ?, ?, ?)
@@ -41,8 +53,9 @@ def show():
                     conn.commit()
                     conn.close()
                     
-                    registrar_evento(prospecto_id, "Alta prospecto", f"Prospecto creado en estado {estado}")
-                    st.success(f"✅ Prospecto {nombre} registrado")
+                    registrar_evento(prospecto_id, "Alta prospecto", f"Prospecto '{nombre}' creado en estado '{estado}'")
+                    st.success(f"✅ Prospecto '{nombre}' registrado correctamente")
+                    st.balloons()
                     st.rerun()
     
     st.divider()
@@ -92,39 +105,35 @@ def show():
     
     st.caption(f"Mostrando {len(prospectos_filtrados)} de {len(prospectos)} prospectos")
     
-    # Mostrar tarjetas
+    # Mostrar cada prospecto
     for p in prospectos_filtrados:
         mostrar_tarjeta_prospecto(p)
+    
+    # Formulario modal de agregar contacto
+    if "prospecto_seleccionado" in st.session_state:
+        st.divider()
+        agregar_contacto(
+            st.session_state["prospecto_seleccionado"],
+            st.session_state.get("prospecto_nombre", "")
+        )
     
     # Formularios modales
     if "editar_prospecto" in st.session_state:
         st.divider()
         editar_prospecto(st.session_state["editar_prospecto"])
-    
-    if "contactos_prospecto" in st.session_state:
-        st.divider()
-        gestionar_contactos(
-            st.session_state["contactos_prospecto"],
-            st.session_state.get("contactos_prospecto_nombre", "")
-        )
 
 
 def mostrar_tarjeta_prospecto(p):
-    """Muestra tarjeta de un prospecto"""
+    """Muestra la tarjeta de un prospecto con sus detalles y contactos"""
     atributos = p["atributos"] or ""
     
-    attrs = {}
-    for attr in atributos.split(";"):
-        if "=" in attr:
-            key, value = attr.split("=", 1)
-            attrs[key] = value
+    # Parsear atributos con la función auxiliar
+    estado = obtener_valor(atributos, "estado")
+    sector = obtener_valor(atributos, "sector")
+    telefono_empresa = obtener_valor(atributos, "telefono_empresa")
+    vigencia = obtener_valor(atributos, "vigencia")
     
-    estado = attrs.get("estado", "Nuevo")
-    sector = attrs.get("sector", "N/A")
-    telefono = attrs.get("telefono", "N/A")
-    vigencia = attrs.get("vigencia", "N/A")
-    
-    # Emojis por estado
+    # Emojis y colores por estado
     estado_config = {
         "Nuevo": {"emoji": "🆕", "color": "🔵"},
         "En negociación": {"emoji": "💬", "color": "🟡"},
@@ -139,7 +148,7 @@ def mostrar_tarjeta_prospecto(p):
         
         with col1:
             st.markdown(f"### {config['emoji']} {p['nombre']}")
-            st.caption(f"**Sector:** {sector} | **Tel:** {telefono}")
+            st.caption(f"**Sector:** {sector} | **📞 Tel. empresa:** {telefono_empresa}")
             st.caption(f"{config['color']} **Estado:** {estado} | **Vigencia:** {vigencia}")
             if not p["activo"]:
                 st.warning("⚠️ Prospecto inactivo")
@@ -154,6 +163,34 @@ def mostrar_tarjeta_prospecto(p):
             else:
                 st.error("❌ Inactivo")
         
+        # Mostrar contactos asociados
+        conn = get_connection()
+        if conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT a.* FROM aup_agentes a
+                INNER JOIN aup_relaciones r ON a.id = r.agente_destino
+                WHERE r.agente_origen = ? AND r.tipo_relacion = 'tiene_contacto'
+                ORDER BY a.fecha_creacion DESC
+            """, (p["id"],))
+            contactos = cur.fetchall()
+            conn.close()
+            
+            if contactos:
+                st.markdown("**📇 Contactos asociados:**")
+                for c in contactos:
+                    nombre_contacto = c["nombre"]
+                    telefono_contacto = obtener_valor(c["atributos"], "telefono_contacto")
+                    correo = obtener_valor(c["atributos"], "correo")
+                    cargo = obtener_valor(c["atributos"], "cargo")
+                    
+                    estado_contacto = "✅" if c["activo"] else "❌"
+                    st.write(f"  {estado_contacto} **{nombre_contacto}** — {cargo} | 📞 {telefono_contacto} | ✉️ {correo}")
+                
+                st.caption(f"Total de contactos vinculados: {len(contactos)}")
+            else:
+                st.info("💡 Sin contactos asociados aún")
+        
         # Botones de acción
         col1, col2, col3, col4 = st.columns(4)
         
@@ -163,14 +200,14 @@ def mostrar_tarjeta_prospecto(p):
                 st.rerun()
         
         with col2:
-            if st.button(f"👤 Contactos", key=f"cont_{p['id']}", use_container_width=True):
-                st.session_state["contactos_prospecto"] = p["id"]
-                st.session_state["contactos_prospecto_nombre"] = p["nombre"]
+            if st.button(f"👤 Nuevo contacto", key=f"cont_{p['id']}", use_container_width=True):
+                st.session_state["prospecto_seleccionado"] = p["id"]
+                st.session_state["prospecto_nombre"] = p["nombre"]
                 st.rerun()
         
         with col3:
             if st.button(f"🔄 Convertir", key=f"conv_{p['id']}", use_container_width=True):
-                convertir_a_cliente(p["id"], p["nombre"])
+                convertir_a_cliente(p["id"], p["nombre"], p["atributos"])
                 st.rerun()
         
         with col4:
@@ -181,7 +218,7 @@ def mostrar_tarjeta_prospecto(p):
 
 
 def editar_prospecto(prospecto_id):
-    """Formulario de edición"""
+    """Formulario de edición de prospecto"""
     conn = get_connection()
     if not conn:
         st.error("Error de conexión")
@@ -198,22 +235,20 @@ def editar_prospecto(prospecto_id):
     
     st.subheader(f"✏️ Editar prospecto: {p['nombre']}")
     
+    # Obtener valores actuales
     atributos = p["atributos"] or ""
-    attrs = {}
-    for attr in atributos.split(";"):
-        if "=" in attr:
-            key, value = attr.split("=", 1)
-            attrs[key] = value
     
     with st.form("form_editar_prospecto"):
         nombre = st.text_input("Nombre", value=p["nombre"])
         
         col1, col2 = st.columns(2)
         with col1:
-            sector = st.text_input("Sector", value=attrs.get("sector", ""))
-            telefono = st.text_input("Teléfono", value=attrs.get("telefono", ""))
+            sector = st.text_input("Sector", value=obtener_valor(atributos, "sector"))
+            telefono_empresa = st.text_input("📞 Teléfono empresa", value=obtener_valor(atributos, "telefono_empresa"))
         with col2:
-            estado_actual = attrs.get("estado", "Nuevo")
+            estado_actual = obtener_valor(atributos, "estado")
+            if estado_actual == "—":
+                estado_actual = "Nuevo"
             estados = ["Nuevo", "En negociación", "Cerrado", "Perdido"]
             idx = estados.index(estado_actual) if estado_actual in estados else 0
             estado = st.selectbox("Estado", estados, index=idx)
@@ -230,7 +265,8 @@ def editar_prospecto(prospecto_id):
         st.rerun()
     
     if submit:
-        nuevos_atributos = f"sector={sector};telefono={telefono};estado={estado};vigencia={attrs.get('vigencia', date.today())}"
+        vigencia_actual = obtener_valor(atributos, "vigencia")
+        nuevos_atributos = f"sector={sector};telefono_empresa={telefono_empresa};estado={estado};vigencia={vigencia_actual}"
         
         conn = get_connection()
         if conn:
@@ -242,91 +278,123 @@ def editar_prospecto(prospecto_id):
             conn.commit()
             conn.close()
             
-            registrar_evento(prospecto_id, "Actualización", f"Prospecto actualizado. Estado: {estado}")
+            registrar_evento(prospecto_id, "Actualización", f"Prospecto '{nombre}' actualizado. Estado: {estado}")
             st.success("✅ Prospecto actualizado correctamente.")
             del st.session_state["editar_prospecto"]
             st.rerun()
 
 
-def gestionar_contactos(prospecto_id, prospecto_nombre):
-    """Gestión de contactos"""
-    st.subheader(f"👥 Contactos de: {prospecto_nombre}")
+def agregar_contacto(prospecto_id, prospecto_nombre):
+    """Agrega un nuevo contacto vinculado al prospecto"""
+    st.subheader(f"� Nuevo contacto para: {prospecto_nombre}")
     
-    conn = get_connection()
-    if conn:
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT a.* FROM aup_agentes a
-            INNER JOIN aup_relaciones r ON a.id = r.agente_destino
-            WHERE r.agente_origen = ? AND r.tipo_relacion = 'tiene_contacto'
-            ORDER BY a.fecha_creacion DESC
-        """, (prospecto_id,))
-        contactos = cur.fetchall()
-        conn.close()
-        
-        if contactos:
-            for c in contactos:
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    st.write(f"**{c['nombre']}**")
-                with col2:
-                    st.success("✅" if c["activo"] else "❌")
-        else:
-            st.info("No hay contactos registrados.")
-    
-    # Agregar contacto
-    with st.form("form_nuevo_contacto"):
-        st.write("➕ Agregar nuevo contacto")
+    with st.form("form_nuevo_contacto", clear_on_submit=True):
         nombre_contacto = st.text_input("Nombre del contacto")
-        submit = st.form_submit_button("💾 Guardar", use_container_width=True)
         
-        if submit and nombre_contacto:
-            conn = get_connection()
-            if conn:
-                cur = conn.cursor()
-                cur.execute(
-                    "INSERT INTO aup_agentes (tipo, nombre, atributos, activo) VALUES (?, ?, ?, ?)",
-                    ("contacto", nombre_contacto, "", 1)
-                )
-                contacto_id = cur.lastrowid
-                
-                cur.execute(
-                    "INSERT INTO aup_relaciones (agente_origen, agente_destino, tipo_relacion) VALUES (?, ?, ?)",
-                    (prospecto_id, contacto_id, "tiene_contacto")
-                )
-                
-                conn.commit()
-                conn.close()
-                
-                registrar_evento(prospecto_id, "Contacto agregado", f"Contacto {nombre_contacto} asociado")
-                st.success(f"✅ Contacto agregado")
-                st.rerun()
+        col1, col2 = st.columns(2)
+        with col1:
+            telefono_contacto = st.text_input("📱 Teléfono directo o móvil")
+            correo = st.text_input("✉️ Correo electrónico")
+        with col2:
+            cargo = st.text_input("💼 Cargo o puesto")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            submit = st.form_submit_button("💾 Guardar contacto", use_container_width=True)
+        with col2:
+            cancel = st.form_submit_button("❌ Cancelar", use_container_width=True)
     
-    if st.button("← Volver", use_container_width=True):
-        del st.session_state["contactos_prospecto"]
-        if "contactos_prospecto_nombre" in st.session_state:
-            del st.session_state["contactos_prospecto_nombre"]
+    if cancel:
+        if "prospecto_seleccionado" in st.session_state:
+            del st.session_state["prospecto_seleccionado"]
+        if "prospecto_nombre" in st.session_state:
+            del st.session_state["prospecto_nombre"]
         st.rerun()
+    
+    if submit and nombre_contacto:
+        conn = get_connection()
+        if conn:
+            cur = conn.cursor()
+            atributos = f"telefono_contacto={telefono_contacto};correo={correo};cargo={cargo}"
+            cur.execute("""
+                INSERT INTO aup_agentes (tipo, nombre, atributos, activo)
+                VALUES (?, ?, ?, ?)
+            """, ("contacto", nombre_contacto, atributos, 1))
+            contacto_id = cur.lastrowid
+            
+            cur.execute("""
+                INSERT INTO aup_relaciones (agente_origen, agente_destino, tipo_relacion)
+                VALUES (?, ?, ?)
+            """, (prospecto_id, contacto_id, "tiene_contacto"))
+            
+            conn.commit()
+            conn.close()
+            
+            registrar_evento(contacto_id, "Alta contacto", f"Contacto '{nombre_contacto}' agregado al prospecto ID {prospecto_id}")
+            st.success(f"✅ Contacto '{nombre_contacto}' vinculado correctamente al prospecto")
+            
+            # Limpiar session state
+            if "prospecto_seleccionado" in st.session_state:
+                del st.session_state["prospecto_seleccionado"]
+            if "prospecto_nombre" in st.session_state:
+                del st.session_state["prospecto_nombre"]
+            st.rerun()
 
 
-def convertir_a_cliente(prospecto_id, nombre):
-    """Convierte prospecto a cliente"""
+def convertir_a_cliente(prospecto_id, nombre, atributos):
+    """Convierte un prospecto en cliente y transfiere sus contactos"""
     conn = get_connection()
-    if conn:
-        cur = conn.cursor()
-        
-        cur.execute("UPDATE aup_agentes SET tipo='cliente' WHERE id=?", (prospecto_id,))
-        
-        cur.execute(
-            "INSERT INTO aup_relaciones (agente_origen, agente_destino, tipo_relacion) VALUES (?, ?, ?)",
-            (prospecto_id, prospecto_id, "convertido_en_cliente")
-        )
-        
-        conn.commit()
+    if not conn:
+        st.error("❌ Error al conectar con la base de datos.")
+        return
+    
+    cur = conn.cursor()
+    
+    # Verificar si ya fue convertido
+    cur.execute("""
+        SELECT * FROM aup_relaciones 
+        WHERE agente_origen = ? AND tipo_relacion = 'convertido_en'
+    """, (prospecto_id,))
+    
+    if cur.fetchone():
+        st.warning("⚠️ Este prospecto ya fue convertido a cliente.")
         conn.close()
-        
-        registrar_evento(prospecto_id, "Conversión", f"Prospecto {nombre} convertido en cliente")
-        st.success(f"🎉 ¡Prospecto {nombre} convertido en cliente!")
+        return
+    
+    # Crear el nuevo cliente con los mismos atributos
+    cur.execute("""
+        INSERT INTO aup_agentes (tipo, nombre, atributos, activo)
+        VALUES (?, ?, ?, ?)
+    """, ("cliente", nombre, atributos, 1))
+    cliente_id = cur.lastrowid
+    
+    # Crear relación de conversión
+    cur.execute("""
+        INSERT INTO aup_relaciones (agente_origen, agente_destino, tipo_relacion)
+        VALUES (?, ?, ?)
+    """, (prospecto_id, cliente_id, "convertido_en"))
+    
+    # Transferir contactos al nuevo cliente
+    cur.execute("""
+        SELECT agente_destino FROM aup_relaciones 
+        WHERE agente_origen = ? AND tipo_relacion = 'tiene_contacto'
+    """, (prospecto_id,))
+    contactos = cur.fetchall()
+    
+    for contacto in contactos:
+        cur.execute("""
+            INSERT INTO aup_relaciones (agente_origen, agente_destino, tipo_relacion)
+            VALUES (?, ?, ?)
+        """, (cliente_id, contacto['agente_destino'], "contacto_principal"))
+    
+    conn.commit()
+    conn.close()
+    
+    registrar_evento(cliente_id, "Conversión", f"Prospecto '{nombre}' convertido a cliente (ID: {cliente_id}). {len(contactos)} contactos transferidos.")
+    st.success(f"🎉 ¡Prospecto '{nombre}' ahora es cliente! (ID: {cliente_id})")
+    if contactos:
+        st.info(f"📇 {len(contactos)} contacto(s) transferido(s) al nuevo cliente")
+    st.balloons()
 
 
 def toggle_activo(prospecto_id, nombre, activo_actual):
