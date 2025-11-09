@@ -62,7 +62,13 @@ def show():
     
     st.caption(f"Mostrando {len(clientes_filtrados)} de {len(clientes)} clientes")
     
-    # Mostrar cada cliente
+    # SI hay un formulario modal abierto, mostrarlo y salir
+    if "editar_cliente" in st.session_state:
+        st.divider()
+        editar_cliente(st.session_state["editar_cliente"])
+        return  # No mostrar las tarjetas cuando hay un formulario abierto
+    
+    # Mostrar tarjetas solo si no hay formularios modales abiertos
     for c in clientes_filtrados:
         mostrar_tarjeta_cliente(c)
 
@@ -76,6 +82,18 @@ def mostrar_tarjeta_cliente(c):
     sector = obtener_valor(atributos, "sector")
     telefono_empresa = obtener_valor(atributos, "telefono_empresa")
     vigencia = obtener_valor(atributos, "vigencia")
+    
+    # Badges visuales por estado comercial
+    color_estado = {
+        "Activo": "🟢",
+        "Suspendido": "🟠",
+        "No renovado": "🔴",
+        "Nuevo": "🔵",
+        "En negociación": "🟡",
+        "Cerrado": "🟢",
+        "Perdido": "🔴"
+    }
+    badge_estado = color_estado.get(estado, "⚪")
     
     # Obtener prospecto original
     conn = get_connection()
@@ -97,7 +115,7 @@ def mostrar_tarjeta_cliente(c):
         with col1:
             st.markdown(f"### 💼 {c['nombre']}")
             st.caption(f"**Sector:** {sector} | **📞 Tel. empresa:** {telefono_empresa}")
-            st.caption(f"**Estado original:** {estado} | **Vigencia:** {vigencia}")
+            st.caption(f"{badge_estado} **Estado:** {estado} | **Vigencia:** {vigencia}")
             if prospecto_id:
                 st.caption(f"🔄 Convertido desde prospecto ID: {prospecto_id}")
             if not c["activo"]:
@@ -142,17 +160,109 @@ def mostrar_tarjeta_cliente(c):
                 st.info("💡 Sin contactos asociados")
         
         # Botones de acción
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         
         with col1:
+            if st.button(f"✏️ Editar", key=f"edit_{c['id']}", use_container_width=True):
+                st.session_state["editar_cliente"] = c["id"]
+                st.rerun()
+        
+        with col2:
             if st.button(f"📊 Ver oportunidades", key=f"opor_{c['id']}", use_container_width=True, disabled=True):
                 st.info("Módulo de Oportunidades próximamente")
         
-        with col2:
+        with col3:
             texto_btn = "❌ Desactivar" if c["activo"] else "✅ Activar"
             if st.button(texto_btn, key=f"toggle_{c['id']}", type="secondary", use_container_width=True):
                 toggle_activo(c["id"], c["nombre"], c["activo"])
                 st.rerun()
+
+
+def editar_cliente(cliente_id):
+    """Permite editar los datos clave del cliente"""
+    conn = get_connection()
+    if not conn:
+        st.error("Error de conexión")
+        return
+        
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM aup_agentes WHERE id=?", (cliente_id,))
+    c = cur.fetchone()
+    conn.close()
+
+    if not c:
+        st.error("❌ Cliente no encontrado.")
+        return
+
+    st.subheader(f"✏️ Editar cliente: {c['nombre']}")
+    
+    # Obtener valores actuales
+    atributos = c["atributos"] or ""
+    estado_actual = obtener_valor(atributos, "estado")
+    
+    # Si el estado viene del prospecto original, mapearlo a estados de cliente
+    mapeo_estados = {
+        "Nuevo": "Activo",
+        "En negociación": "Activo",
+        "Cerrado": "Activo",
+        "Perdido": "Suspendido"
+    }
+    
+    if estado_actual in mapeo_estados:
+        estado_actual = mapeo_estados[estado_actual]
+    elif estado_actual == "—":
+        estado_actual = "Activo"
+    
+    with st.form("form_editar_cliente"):
+        nombre = st.text_input("Nombre del cliente", value=c["nombre"])
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            sector = st.text_input("Sector", value=obtener_valor(atributos, "sector"))
+            telefono_empresa = st.text_input("📞 Teléfono empresa", value=obtener_valor(atributos, "telefono_empresa"))
+        with col2:
+            estados_cliente = ["Activo", "Suspendido", "No renovado"]
+            idx = estados_cliente.index(estado_actual) if estado_actual in estados_cliente else 0
+            estado = st.selectbox("Estado del cliente", estados_cliente, index=idx)
+            
+            # Manejar vigencia
+            vigencia_str = obtener_valor(atributos, "vigencia")
+            try:
+                vigencia_actual = date.fromisoformat(vigencia_str) if vigencia_str != "—" else date.today()
+            except:
+                vigencia_actual = date.today()
+            
+            vigencia = st.date_input("Vigente hasta", value=vigencia_actual)
+        
+        activo = st.checkbox("Cliente activo", value=bool(c["activo"]))
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            submit = st.form_submit_button("💾 Guardar cambios", use_container_width=True)
+        with col2:
+            cancel = st.form_submit_button("❌ Cancelar", use_container_width=True)
+    
+    if cancel:
+        del st.session_state["editar_cliente"]
+        st.rerun()
+    
+    if submit:
+        nuevos_atributos = f"sector={sector};telefono_empresa={telefono_empresa};estado={estado};vigencia={vigencia}"
+        
+        conn = get_connection()
+        if conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE aup_agentes SET nombre=?, atributos=?, activo=? WHERE id=?",
+                (nombre, nuevos_atributos, 1 if activo else 0, cliente_id)
+            )
+            conn.commit()
+            conn.close()
+            
+            registrar_evento(cliente_id, "Edición cliente", f"Cliente '{nombre}' actualizado. Estado: {estado}")
+            st.success("✅ Cliente actualizado correctamente.")
+            del st.session_state["editar_cliente"]
+            st.rerun()
 
 
 def toggle_activo(cliente_id, nombre, activo_actual):
