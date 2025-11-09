@@ -14,5 +14,5 @@ def show_sidebar():
     st.sidebar.title("Navegación")
     return st.sidebar.radio(
         "Selecciona una sección",
-        ["Dashboard", "Usuarios", "Prospectos", "Clientes", "Oportunidades", "Productos", "Facturación"]
+        ["Dashboard", "Usuarios", "Prospectos", "Clientes", "Oportunidades", "Dashboard Oportunidades", "Productos", "Facturación"]
     )
