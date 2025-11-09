@@ -176,11 +176,12 @@ def mostrar_tarjeta_cliente(c):
                 st.rerun()
         
         with col2:
-            if st.button(f"📊 Ver oportunidades", key=f"opor_{c['id']}", use_container_width=True, disabled=True):
-                # Preparación para módulo de Oportunidades
+            if st.button("📊 Ver oportunidades", key=f"ver_oportunidades_{c['id']}", use_container_width=True):
+                # Navegar al módulo de Oportunidades con cliente preseleccionado
                 st.session_state["cliente_seleccionado"] = c["id"]
                 st.session_state["cliente_nombre"] = c["nombre"]
-                st.info("Módulo de Oportunidades próximamente")
+                st.session_state["pagina_actual"] = "Oportunidades"
+                st.rerun()
         
         with col3:
             texto_btn = "❌ Desactivar" if c["activo"] else "✅ Activar"
