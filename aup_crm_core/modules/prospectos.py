@@ -9,16 +9,8 @@ import streamlit as st
 from datetime import date, timedelta
 from core.database import get_connection
 from core.event_logger import registrar_evento
+from core.ui_utils import badge_estado, obtener_valor
 import re
-
-# ==========================================================
-#  🧩 FUNCIONES AUXILIARES
-# ==========================================================
-
-def obtener_valor(atributos, clave):
-    """Extrae un valor del string de atributos usando regex"""
-    match = re.search(rf"{clave}=([^;]+)", atributos or "")
-    return match.group(1) if match else "—"
 
 
 def show():
@@ -134,23 +126,25 @@ def mostrar_tarjeta_prospecto(p):
     telefono_empresa = obtener_valor(atributos, "telefono_empresa")
     vigencia = obtener_valor(atributos, "vigencia")
     
-    # Emojis y colores por estado
-    estado_config = {
-        "Nuevo": {"emoji": "🆕", "color": "🔵"},
-        "En negociación": {"emoji": "💬", "color": "🟡"},
-        "Cerrado": {"emoji": "✅", "color": "🟢"},
-        "Perdido": {"emoji": "❌", "color": "🔴"}
-    }
+    # Usar badge centralizado (mantiene emoji + color para prospectos)
+    badge = badge_estado(estado)
     
-    config = estado_config.get(estado, {"emoji": "📋", "color": "⚪"})
+    # Colores específicos para prospectos (complemento visual)
+    colores = {
+        "Nuevo": "🔵",
+        "En negociación": "🟡",
+        "Cerrado": "🟢",
+        "Perdido": "🔴"
+    }
+    color = colores.get(estado, "⚪")
     
     with st.container(border=True):
         col1, col2, col3 = st.columns([3, 1, 1])
         
         with col1:
-            st.markdown(f"### {config['emoji']} {p['nombre']}")
+            st.markdown(f"### {badge} {p['nombre']}")
             st.caption(f"**Sector:** {sector} | **📞 Tel. empresa:** {telefono_empresa}")
-            st.caption(f"{config['color']} **Estado:** {estado} | **Vigencia:** {vigencia}")
+            st.caption(f"{color} **Estado:** {estado} | **Vigencia:** {vigencia}")
             if not p["activo"]:
                 st.warning("⚠️ Prospecto inactivo")
         

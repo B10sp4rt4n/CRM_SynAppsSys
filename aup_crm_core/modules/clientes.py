@@ -5,20 +5,12 @@ Visualización de prospectos convertidos en clientes
 """
 
 import streamlit as st
-from datetime import date
+from datetime import date, datetime
 from core.database import get_connection
 from core.event_logger import registrar_evento
-from core.config_global import RECORDIA_ENABLED
+from core.config_global import RECORDIA_ENABLED, APP_VERSION
+from core.ui_utils import badge_estado, obtener_valor, validar_vigencia
 import re
-
-# ==========================================================
-#  🧩 FUNCIONES AUXILIARES
-# ==========================================================
-
-def obtener_valor(atributos, clave):
-    """Extrae un valor del string de atributos usando regex"""
-    match = re.search(rf"{clave}=([^;]+)", atributos or "")
-    return match.group(1) if match else "—"
 
 
 def show():
@@ -92,19 +84,13 @@ def mostrar_tarjeta_cliente(c):
     estado = obtener_valor(atributos, "estado")
     sector = obtener_valor(atributos, "sector")
     telefono_empresa = obtener_valor(atributos, "telefono_empresa")
-    vigencia = obtener_valor(atributos, "vigencia")
+    vigencia_str = obtener_valor(atributos, "vigencia")
     
-    # Badges visuales por estado comercial
-    color_estado = {
-        "Activo": "🟢",
-        "Suspendido": "🟠",
-        "No renovado": "🔴",
-        "Nuevo": "🔵",
-        "En negociación": "🟡",
-        "Cerrado": "🟢",
-        "Perdido": "🔴"
-    }
-    badge_estado = color_estado.get(estado, "⚪")
+    # Badge visual centralizado
+    badge = badge_estado(estado)
+    
+    # Validar estado de vigencia
+    estado_vigencia, dias_restantes = validar_vigencia(vigencia_str)
     
     # Obtener prospecto original
     conn = get_connection()
@@ -130,7 +116,14 @@ def mostrar_tarjeta_cliente(c):
         with col1:
             st.markdown(f"### 💼 {c['nombre']}")
             st.caption(f"**Sector:** {sector} | **📞 Tel. empresa:** {telefono_empresa}")
-            st.caption(f"{badge_estado} **Estado:** {estado} | **Vigencia:** {vigencia}")
+            st.caption(f"{badge} **Estado:** {estado} | **Vigencia:** {vigencia_str}")
+            
+            # Indicador visual de expiración
+            if estado_vigencia == "vencida":
+                st.error(f"⚠️ Vigencia vencida hace {dias_restantes} días")
+            elif estado_vigencia == "próxima":
+                st.warning(f"⏰ Vigencia próxima a vencer en {dias_restantes} días")
+            
             if prospecto_id:
                 st.caption(f"🔄 Convertido desde prospecto ID: {prospecto_id}")
             if not c["activo"]:
@@ -184,6 +177,9 @@ def mostrar_tarjeta_cliente(c):
         
         with col2:
             if st.button(f"📊 Ver oportunidades", key=f"opor_{c['id']}", use_container_width=True, disabled=True):
+                # Preparación para módulo de Oportunidades
+                st.session_state["cliente_seleccionado"] = c["id"]
+                st.session_state["cliente_nombre"] = c["nombre"]
                 st.info("Módulo de Oportunidades próximamente")
         
         with col3:
@@ -288,9 +284,13 @@ def editar_cliente(cliente_id):
             
             registrar_evento(cliente_id, "Edición cliente", f"Cliente '{nombre}' actualizado. Estado: {estado}")
             
-            # Gancho para integración futura con Recordia-Bridge
+            # Gancho para integración futura con Recordia-Bridge (registro forense)
             if RECORDIA_ENABLED:
-                registrar_evento(cliente_id, "Sync Recordia", f"Cliente '{nombre}' sincronizado con ledger forense.")
+                registrar_evento(
+                    cliente_id, 
+                    "Sync Recordia", 
+                    f"Cliente '{nombre}' actualizado y registrado en ledger {APP_VERSION}."
+                )
             
             st.success("✅ Cliente actualizado correctamente.")
             del st.session_state["editar_cliente"]
