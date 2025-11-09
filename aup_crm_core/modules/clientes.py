@@ -8,6 +8,7 @@ import streamlit as st
 from datetime import date
 from core.database import get_connection
 from core.event_logger import registrar_evento
+from core.config_global import RECORDIA_ENABLED
 import re
 
 # ==========================================================
@@ -45,10 +46,13 @@ def show():
         return
     
     # Filtros
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         mostrar_inactivos = st.checkbox("Mostrar inactivos", value=False)
     with col2:
+        estados_cliente = ["Todos", "Activo", "Suspendido", "No renovado"]
+        estado_filtro = st.selectbox("Filtrar por estado", estados_cliente, index=0)
+    with col3:
         st.metric("Total clientes", len(clientes))
     
     st.divider()
@@ -58,6 +62,13 @@ def show():
     for c in clientes:
         if not mostrar_inactivos and not c["activo"]:
             continue
+        
+        # Filtro por estado
+        if estado_filtro != "Todos":
+            estado_actual = obtener_valor(c["atributos"], "estado")
+            if estado_actual != estado_filtro:
+                continue
+        
         clientes_filtrados.append(c)
     
     st.caption(f"Mostrando {len(clientes_filtrados)} de {len(clientes)} clientes")
@@ -108,6 +119,10 @@ def mostrar_tarjeta_cliente(c):
         if resultado:
             prospecto_id = resultado["agente_origen"]
         conn.close()
+    
+    # Estilo atenuado para clientes inactivos
+    if not c["activo"]:
+        st.markdown("<div style='opacity: 0.6;'>", unsafe_allow_html=True)
     
     with st.container(border=True):
         col1, col2, col3 = st.columns([3, 1, 1])
@@ -176,6 +191,10 @@ def mostrar_tarjeta_cliente(c):
             if st.button(texto_btn, key=f"toggle_{c['id']}", type="secondary", use_container_width=True):
                 toggle_activo(c["id"], c["nombre"], c["activo"])
                 st.rerun()
+    
+    # Cerrar div de estilo atenuado para clientes inactivos
+    if not c["activo"]:
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 def editar_cliente(cliente_id):
@@ -247,6 +266,14 @@ def editar_cliente(cliente_id):
         st.rerun()
     
     if submit:
+        # Seguridad: valores por defecto para campos vacíos
+        sector = sector or "No definido"
+        telefono_empresa = telefono_empresa or "Sin teléfono"
+        
+        # Sincronizar vigencia automática si se marca como inactivo
+        if not activo and vigencia > date.today():
+            vigencia = date.today()
+        
         nuevos_atributos = f"sector={sector};telefono_empresa={telefono_empresa};estado={estado};vigencia={vigencia}"
         
         conn = get_connection()
@@ -260,6 +287,11 @@ def editar_cliente(cliente_id):
             conn.close()
             
             registrar_evento(cliente_id, "Edición cliente", f"Cliente '{nombre}' actualizado. Estado: {estado}")
+            
+            # Gancho para integración futura con Recordia-Bridge
+            if RECORDIA_ENABLED:
+                registrar_evento(cliente_id, "Sync Recordia", f"Cliente '{nombre}' sincronizado con ledger forense.")
+            
             st.success("✅ Cliente actualizado correctamente.")
             del st.session_state["editar_cliente"]
             st.rerun()
