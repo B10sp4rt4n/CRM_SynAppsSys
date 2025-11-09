@@ -394,10 +394,14 @@ def show():
     col_f1, col_f2, col_f3 = st.columns(3)
     
     with col_f1:
+        # Default dinámico: solo incluir estados que existen
+        estados_disponibles = df["estado"].unique().tolist()
+        estados_default = [e for e in ["Abierta", "En negociación"] if e in estados_disponibles]
+        
         filtro_estado = st.multiselect(
             "Filtrar por estado",
-            df["estado"].unique(),
-            default=["Abierta", "En negociación"]
+            estados_disponibles,
+            default=estados_default if estados_default else estados_disponibles
         )
     
     with col_f2:
