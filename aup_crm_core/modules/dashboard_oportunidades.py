@@ -91,14 +91,14 @@ def show():
         {
             "id": o["id"],
             "nombre": o["nombre"],
-            "cliente": o.get("cliente_nombre") or "Sin cliente",
+            "cliente": o["cliente_nombre"] if "cliente_nombre" in o.keys() and o["cliente_nombre"] else "Sin cliente",
             "monto": float(obtener_valor(o["atributos"], "monto") or 0),
             "estado": obtener_valor(o["atributos"], "estado") or "Desconocido",
             "probabilidad": int(obtener_valor(o["atributos"], "probabilidad") or 0),
             "responsable": obtener_valor(o["atributos"], "responsable") or "No asignado",
             "fuente": obtener_valor(o["atributos"], "fuente") or "No especificada",
             "cierre": obtener_valor(o["atributos"], "cierre") or None,
-            "fecha_creacion": o.get("fecha_creacion")
+            "fecha_creacion": o["fecha_creacion"] if "fecha_creacion" in o.keys() else None
         }
         for o in oportunidades
     ])
