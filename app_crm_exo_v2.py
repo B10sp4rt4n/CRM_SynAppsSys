@@ -189,6 +189,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Inicializar base de datos al arrancar la aplicación
+inicializar_db()
+
 # CSS personalizado
 st.markdown("""
 <style>
