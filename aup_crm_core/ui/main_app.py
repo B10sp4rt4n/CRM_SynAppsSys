@@ -6,7 +6,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 import streamlit as st
 from core.database import init_db
 from core.config_global import mostrar_estado
-from modules import clientes, oportunidades, productos, facturacion, usuarios, prospectos, dashboard_oportunidades
+from modules import clientes, oportunidades, productos, facturacion, usuarios, prospectos, dashboard_oportunidades, empresas
 from modules.auth import esta_autenticado, cerrar_sesion, obtener_usuario_actual
 from ui import sidebar, dashboard, login
 
@@ -92,6 +92,8 @@ def main():
             usuarios.show()
         else:
             st.warning("⚠️ No tienes permisos para acceder a esta sección.")
+    elif page == "Empresas":
+        empresas.show()
     elif page == "Prospectos":
         prospectos.show()
     elif page == "Clientes":

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Módulo de Clientes - Gestión Relacional AUP
-Visualización de prospectos convertidos en clientes
+Módulo de Clientes - Vista de prospectos convertidos
+Muestra solo prospectos con es_cliente=1 (REGLA R3)
 """
 
 import streamlit as st
@@ -14,10 +14,12 @@ import re
 
 
 def show():
-    """Interfaz principal del módulo de clientes"""
-    st.header("👥 Gestión de Clientes")
+    """Interfaz principal del módulo de clientes - Vista de prospectos convertidos"""
+    st.header("👥 Clientes")
     
-    # Obtener clientes
+    st.info("💡 Los clientes son prospectos que ganaron al menos una oportunidad y se convirtieron automáticamente.")
+    
+    # Obtener PROSPECTOS que son clientes (es_cliente=1)
     conn = get_connection()
     if not conn:
         st.error("Error al conectar con la base de datos")
@@ -26,15 +28,19 @@ def show():
     cur = conn.cursor()
     cur.execute("""
         SELECT * FROM aup_agentes 
-        WHERE tipo='cliente' 
+        WHERE tipo='prospecto'
         ORDER BY fecha_creacion DESC
     """)
-    clientes = cur.fetchall()
+    todos_prospectos = cur.fetchall()
     conn.close()
     
+    # Filtrar solo los que son clientes
+    clientes = [p for p in todos_prospectos if obtener_valor(p["atributos"], "es_cliente") == "1"]
+    
     if not clientes:
-        st.info("📋 No hay clientes registrados aún.")
-        st.caption("💡 Los clientes aparecen aquí cuando conviertes un prospecto usando el botón '🔄 Convertir' en el módulo de Prospectos.")
+        st.warning("📋 No hay clientes registrados aún.")
+        st.caption("� Los clientes se generan automáticamente cuando una **oportunidad** se marca como **Ganada** (REGLA R3)")
+        st.caption("🔄 **Flujo:** Empresa → Contacto → Prospecto → Oportunidad Ganada → **CLIENTE**")
         return
     
     # Filtros
@@ -42,8 +48,8 @@ def show():
     with col1:
         mostrar_inactivos = st.checkbox("Mostrar inactivos", value=False)
     with col2:
-        estados_cliente = ["Todos", "Activo", "Suspendido", "No renovado"]
-        estado_filtro = st.selectbox("Filtrar por estado", estados_cliente, index=0)
+        # Ordenar por
+        orden = st.selectbox("Ordenar por", ["Fecha conversión (reciente)", "Nombre (A-Z)", "Más antiguo"])
     with col3:
         st.metric("Total clientes", len(clientes))
     
@@ -54,48 +60,193 @@ def show():
     for c in clientes:
         if not mostrar_inactivos and not c["activo"]:
             continue
-        
-        # Filtro por estado
-        if estado_filtro != "Todos":
-            estado_actual = obtener_valor(c["atributos"], "estado")
-            if estado_actual != estado_filtro:
-                continue
-        
         clientes_filtrados.append(c)
+    
+    # Ordenar
+    if orden == "Nombre (A-Z)":
+        clientes_filtrados.sort(key=lambda x: x["nombre"])
+    elif orden == "Más antiguo":
+        clientes_filtrados.sort(key=lambda x: x["fecha_creacion"])
+    else:  # Fecha conversión reciente
+        clientes_filtrados.sort(
+            key=lambda x: obtener_valor(x["atributos"], "fecha_conversion_cliente"), 
+            reverse=True
+        )
     
     st.caption(f"Mostrando {len(clientes_filtrados)} de {len(clientes)} clientes")
     
-    # SI hay un formulario modal abierto, mostrarlo y salir
-    if "editar_cliente" in st.session_state:
-        st.divider()
-        editar_cliente(st.session_state["editar_cliente"])
-        return  # No mostrar las tarjetas cuando hay un formulario abierto
-    
-    # Mostrar tarjetas solo si no hay formularios modales abiertos
+    # Mostrar tarjetas
     for c in clientes_filtrados:
         mostrar_tarjeta_cliente(c)
 
 
 def mostrar_tarjeta_cliente(c):
-    """Muestra la tarjeta de un cliente con sus detalles y contactos"""
+    """Muestra la tarjeta de un cliente (prospecto convertido)"""
     atributos = c["atributos"] or ""
     
     # Parsear atributos
-    estado = obtener_valor(atributos, "estado")
     sector = obtener_valor(atributos, "sector")
-    telefono_empresa = obtener_valor(atributos, "telefono_empresa")
-    vigencia_str = obtener_valor(atributos, "vigencia")
+    telefono = obtener_valor(atributos, "telefono")
+    fecha_conversion = obtener_valor(atributos, "fecha_conversion_cliente")
+    estado = obtener_valor(atributos, "estado")
     
-    # Badge visual centralizado
-    badge = badge_estado(estado)
-    
-    # Validar estado de vigencia
-    estado_vigencia, dias_restantes = validar_vigencia(vigencia_str)
-    
-    # Obtener prospecto original
+    # Obtener empresa origen y oportunidades
     conn = get_connection()
-    prospecto_id = None
+    empresa_nombre = "—"
+    contactos_count = 0
+    oportunidades_total = 0
+    oportunidades_ganadas = 0
+    monto_total_ganado = 0.0
+    
     if conn:
+        cur = conn.cursor()
+        
+        # Obtener empresa origen
+        cur.execute("""
+            SELECT a.nombre FROM aup_agentes a
+            INNER JOIN aup_relaciones r ON r.agente_destino = a.id
+            WHERE r.agente_origen = ? AND r.tipo_relacion = 'tiene_contacto'
+            LIMIT 1
+        """, (c["id"],))
+        empresa = cur.fetchone()
+        if empresa:
+            empresa_nombre = empresa["nombre"]
+        
+        # Contar contactos
+        cur.execute("""
+            SELECT COUNT(*) as total FROM aup_relaciones
+            WHERE agente_origen = ? AND tipo_relacion = 'tiene_contacto'
+        """, (c["id"],))
+        contactos_count = cur.fetchone()["total"]
+        
+        # Contar oportunidades y calcular monto ganado
+        cur.execute("""
+            SELECT a.* FROM aup_agentes a
+            INNER JOIN aup_relaciones r ON r.agente_destino = a.id
+            WHERE r.agente_origen = ? AND r.tipo_relacion = 'tiene_oportunidad'
+        """, (c["id"],))
+        oportunidades = cur.fetchall()
+        oportunidades_total = len(oportunidades)
+        
+        for o in oportunidades:
+            estado_op = obtener_valor(o["atributos"], "estado")
+            if estado_op == "Ganada":
+                oportunidades_ganadas += 1
+                monto = obtener_valor(o["atributos"], "monto")
+                if monto != "—":
+                    monto_total_ganado += float(monto)
+        
+        conn.close()
+    
+    with st.container(border=True):
+        # Encabezado con indicador de cliente
+        st.markdown(f"### ✅ {c['nombre']}")
+        st.success(f"**Cliente desde:** {fecha_conversion}")
+        
+        # Métricas principales
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.caption(f"**Sector:** {sector}")
+        with col2:
+            st.metric("Oportunidades ganadas", f"{oportunidades_ganadas}/{oportunidades_total}")
+        with col3:
+            st.metric("Facturación total", f"${monto_total_ganado:,.0f}")
+        with col4:
+            st.metric("Contactos", contactos_count)
+        
+        # Información adicional
+        with st.expander("📊 Ver detalles completos"):
+            st.caption(f"**📞 Teléfono:** {telefono}")
+            st.caption(f"**🏢 Empresa origen:** {empresa_nombre}")
+            st.caption(f"**📅 Fecha creación (como prospecto):** {c['fecha_creacion'][:10]}")
+            st.caption(f"**✅ Fecha conversión a cliente:** {fecha_conversion}")
+            st.caption(f"**ID Prospecto:** {c['id']}")
+            
+            # Mostrar estado de actividad
+            if c["activo"]:
+                st.success("✅ Cliente activo")
+            else:
+                st.error("❌ Cliente inactivo")
+        
+        # Botones de acción
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("📈 Ver oportunidades", key=f"ver_op_cli_{c['id']}", use_container_width=True):
+                # Redirigir al módulo de oportunidades con este prospecto
+                st.session_state["prospecto_id_oportunidad"] = c["id"]
+                st.session_state["prospecto_nombre_oportunidad"] = c["nombre"]
+                st.switch_page("pages/oportunidades.py") if hasattr(st, 'switch_page') else st.info("Ir a módulo Oportunidades")
+        
+        with col2:
+            if st.button("👤 Ver contactos", key=f"ver_cont_cli_{c['id']}", use_container_width=True):
+                ver_contactos_cliente(c["id"], c["nombre"])
+        
+        with col3:
+            if c["activo"]:
+                if st.button("❌ Desactivar", key=f"deact_cli_{c['id']}", use_container_width=True):
+                    desactivar_cliente(c["id"], c["nombre"])
+                    st.rerun()
+            else:
+                if st.button("✅ Activar", key=f"act_cli_{c['id']}", use_container_width=True):
+                    activar_cliente(c["id"], c["nombre"])
+                    st.rerun()
+
+
+def ver_contactos_cliente(cliente_id, cliente_nombre):
+    """Muestra los contactos asociados al cliente"""
+    conn = get_connection()
+    if not conn:
+        return
+    
+    st.markdown(f"### 📇 Contactos de {cliente_nombre}")
+    
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT a.* FROM aup_agentes a
+        INNER JOIN aup_relaciones r ON r.agente_destino = a.id
+        WHERE r.agente_origen = ? AND r.tipo_relacion = 'tiene_contacto'
+    """, (cliente_id,))
+    contactos = cur.fetchall()
+    conn.close()
+    
+    if not contactos:
+        st.info("No hay contactos registrados")
+        return
+    
+    for c in contactos:
+        cargo = obtener_valor(c["atributos"], "cargo")
+        telefono = obtener_valor(c["atributos"], "telefono")
+        correo = obtener_valor(c["atributos"], "correo")
+        
+        with st.container(border=True):
+            st.markdown(f"**{c['nombre']}** — {cargo}")
+            st.caption(f"📞 {telefono} | ✉️ {correo}")
+
+
+def desactivar_cliente(cliente_id, nombre):
+    """Desactiva un cliente (prospecto convertido)"""
+    conn = get_connection()
+    if conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE aup_agentes SET activo=0 WHERE id=?", (cliente_id,))
+        conn.commit()
+        conn.close()
+        registrar_evento(cliente_id, "Desactivación cliente", f"Cliente '{nombre}' desactivado")
+        st.success(f"✅ Cliente '{nombre}' desactivado")
+
+
+def activar_cliente(cliente_id, nombre):
+    """Activa un cliente"""
+    conn = get_connection()
+    if conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE aup_agentes SET activo=1 WHERE id=?", (cliente_id,))
+        conn.commit()
+        conn.close()
+        registrar_evento(cliente_id, "Activación cliente", f"Cliente '{nombre}' activado")
+        st.success(f"✅ Cliente '{nombre}' activado")
+
         cur = conn.cursor()
         cur.execute("""
             SELECT agente_origen FROM aup_relaciones 
