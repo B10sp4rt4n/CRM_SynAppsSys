@@ -379,7 +379,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"❌ Error: {e}")
     
-    con.close()
+    self.cerrar_conexion(con)
     print()
     print("=" * 60)
     print("✅ Tests completados")

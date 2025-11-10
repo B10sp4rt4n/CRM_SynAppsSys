@@ -141,7 +141,7 @@ class EmpresaRepository(AUPRepository):
             con.rollback()
             raise e
         finally:
-            con.close()
+            self.cerrar_conexion(con)
 
     # ------------------------------------------------------------
     # Búsqueda inteligente por nombre o RFC
@@ -180,7 +180,7 @@ class EmpresaRepository(AUPRepository):
             return [dict(r) for r in rows]
         
         finally:
-            con.close()
+            self.cerrar_conexion(con)
 
     # ------------------------------------------------------------
     # Listado general de empresas
@@ -245,7 +245,7 @@ class EmpresaRepository(AUPRepository):
             return [dict(r) for r in rows]
         
         finally:
-            con.close()
+            self.cerrar_conexion(con)
 
     # ------------------------------------------------------------
     # Obtener empresa por ID
@@ -257,7 +257,11 @@ class EmpresaRepository(AUPRepository):
         Returns:
             Dict: Datos de la empresa, None si no existe
         """
-        return self.obtener_por_id(self.tabla, self.id_campo, id_empresa)
+        return super().obtener_por_id(self.tabla, self.id_campo, id_empresa)
+    
+    def obtener_por_id(self, id_empresa: int) -> Optional[Dict]:
+        """Alias de obtener_empresa para compatibilidad con tests"""
+        return self.obtener_empresa(id_empresa)
 
     # ------------------------------------------------------------
     # Actualizar empresa

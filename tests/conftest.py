@@ -18,6 +18,7 @@ def db_connection(tmp_path):
     """
     db_path = tmp_path / "test_crm.sqlite"
     conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row  # ← CRÍTICO: Habilitar diccionarios
     conn.execute("PRAGMA foreign_keys = ON")
     
     # Crear esquema completo - Compatible con arquitectura AUP (tabla aup_agentes)
@@ -53,6 +54,7 @@ def db_connection(tmp_path):
         correo TEXT UNIQUE NOT NULL,
         telefono TEXT,
         puesto TEXT,
+        fecha_alta TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (id_empresa) REFERENCES empresas(id_empresa)
     );
@@ -61,8 +63,9 @@ def db_connection(tmp_path):
         id_prospecto INTEGER PRIMARY KEY AUTOINCREMENT,
         id_empresa INTEGER NOT NULL UNIQUE,
         id_contacto INTEGER,
+        origen TEXT,
         fuente TEXT,
-        estado TEXT DEFAULT 'nuevo' CHECK(estado IN ('nuevo', 'contactado', 'calificado', 'convertido')),
+        estado TEXT DEFAULT 'nuevo' CHECK(estado IN ('nuevo', 'contactado', 'calificado', 'convertido', 'Activo')),
         fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (id_empresa) REFERENCES empresas(id_empresa),
         FOREIGN KEY (id_contacto) REFERENCES contactos(id_contacto)
@@ -132,19 +135,17 @@ def db_connection(tmp_path):
         accion TEXT NOT NULL,
         usuario TEXT DEFAULT 'sistema',
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        datos_antes TEXT,
-        datos_despues TEXT,
-        metadatos TEXT,
+        valor_anterior TEXT,
+        valor_nuevo TEXT,
         hash_evento TEXT
     );
 
     CREATE TABLE hash_registros (
         id_hash INTEGER PRIMARY KEY AUTOINCREMENT,
-        entidad TEXT NOT NULL,
-        id_entidad INTEGER NOT NULL,
+        tabla_origen TEXT NOT NULL,
+        id_registro INTEGER NOT NULL,
         hash_sha256 TEXT NOT NULL,
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        metadatos TEXT
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
     -- Tabla de atributos dinámicos

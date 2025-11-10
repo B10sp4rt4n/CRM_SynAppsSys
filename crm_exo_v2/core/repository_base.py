@@ -102,6 +102,14 @@ class AUPRepository:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys = ON")
         return con
+    
+    def cerrar_conexion(self, con: sqlite3.Connection):
+        """
+        Cierra la conexión solo si NO es externa (inyectada para testing).
+        En testing, la conexión se maneja externamente y no debe cerrarse.
+        """
+        if not (hasattr(self, '_external_conn') and self._external_conn):
+            self.cerrar_conexion(con)
 
     # ------------------------------------------------------------
     # Hash estructurado (SHA-256 JSON)
@@ -226,7 +234,7 @@ class AUPRepository:
             con.rollback()
             raise e
         finally:
-            con.close()
+            self.cerrar_conexion(con)
 
     # ------------------------------------------------------------
     # Actualización genérica (UPDATE)
@@ -266,7 +274,7 @@ class AUPRepository:
             con.rollback()
             raise e
         finally:
-            con.close()
+            self.cerrar_conexion(con)
 
     # ------------------------------------------------------------
     # Lectura genérica (SELECT)
@@ -311,7 +319,7 @@ class AUPRepository:
             return [dict(r) for r in rows]
         
         finally:
-            con.close()
+            self.cerrar_conexion(con)
 
     def obtener_por_id(self, tabla: str, id_campo: str, id_valor: int) -> Optional[Dict]:
         """
@@ -354,7 +362,7 @@ class AUPRepository:
             con.rollback()
             raise e
         finally:
-            con.close()
+            self.cerrar_conexion(con)
 
     # ------------------------------------------------------------
     # Validación de integridad estructural
@@ -395,7 +403,7 @@ class AUPRepository:
             }
         
         finally:
-            con.close()
+            self.cerrar_conexion(con)
 
     # ------------------------------------------------------------
     # Demostración estructural
@@ -461,7 +469,7 @@ class AUPRepository:
         """, (self.entidad,))
         hashes = cur.fetchone()[0]
         print(f"   🔐 Hashes forenses: {hashes}")
-        con.close()
+        self.cerrar_conexion(con)
         
         print("\n" + "=" * 60)
         print("✅ Demo completado exitosamente")

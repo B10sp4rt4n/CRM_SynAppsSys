@@ -90,12 +90,12 @@ class OportunidadRepository(AUPRepository):
         """, (id_prospecto,))
         p = cur.fetchone()
         if not p:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"El prospecto con ID {id_prospecto} no existe.")
         
         # 2️⃣ Validar prospecto está activo (REGLA R2)
         if p["estado"] not in ["Activo", "Cliente"]:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(
                 f"REGLA R2 VIOLADA: El prospecto {id_prospecto} no está activo "
                 f"(estado actual: '{p['estado']}'). Solo prospectos Activos pueden generar oportunidades."
@@ -107,7 +107,7 @@ class OportunidadRepository(AUPRepository):
             WHERE id_prospecto = ? AND nombre = ?
         """, (id_prospecto, nombre))
         if cur.fetchone():
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"Ya existe una oportunidad con el nombre '{nombre}' para este prospecto.")
 
         # 4️⃣ Crear oportunidad
@@ -129,7 +129,7 @@ class OportunidadRepository(AUPRepository):
         # Trazabilidad forense
         self.registrar_evento(con, id_opp, "CREAR", data)
         
-        con.close()
+        self.cerrar_conexion(con)
         return id_opp
 
     # ------------------------------------------------------------
@@ -161,7 +161,7 @@ class OportunidadRepository(AUPRepository):
         cur.execute("SELECT * FROM oportunidades WHERE id_oportunidad = ?", (id_oportunidad,))
         o = cur.fetchone()
         if not o:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"Oportunidad {id_oportunidad} no existe.")
 
         campos = {}
@@ -173,7 +173,7 @@ class OportunidadRepository(AUPRepository):
             campos["monto_estimado"] = monto_estimado
 
         if not campos:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError("No se proporcionaron campos para actualizar.")
 
         set_clause = ", ".join(f"{k} = ?" for k in campos)
@@ -184,7 +184,7 @@ class OportunidadRepository(AUPRepository):
         # Registro forense del cambio
         self.registrar_evento(con, id_oportunidad, "ACTUALIZAR", campos)
         
-        con.close()
+        self.cerrar_conexion(con)
 
     # ------------------------------------------------------------
     # Marcar ganada y convertir prospecto a cliente (REGLA R3)
@@ -217,7 +217,7 @@ class OportunidadRepository(AUPRepository):
         """, (id_oportunidad,))
         row = cur.fetchone()
         if not row:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"Oportunidad {id_oportunidad} no existe.")
 
         id_prospecto = row["id_prospecto"]
@@ -240,7 +240,7 @@ class OportunidadRepository(AUPRepository):
             "razon": f"Oportunidad {id_oportunidad} ganada"
         })
         
-        con.close()
+        self.cerrar_conexion(con)
 
     # ------------------------------------------------------------
     # Listado general y por prospecto
@@ -297,7 +297,7 @@ class OportunidadRepository(AUPRepository):
             """)
         
         rows = cur.fetchall()
-        con.close()
+        self.cerrar_conexion(con)
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------
@@ -333,7 +333,7 @@ class OportunidadRepository(AUPRepository):
             WHERE o.id_oportunidad = ?
         """, (id_oportunidad,))
         row = cur.fetchone()
-        con.close()
+        self.cerrar_conexion(con)
         
         if not row:
             raise ValueError(f"Oportunidad {id_oportunidad} no existe.")
@@ -383,7 +383,7 @@ class OportunidadRepository(AUPRepository):
         """)
         stats["pipeline_ponderado"] = cur.fetchone()["pipeline_ponderado"] or 0
         
-        con.close()
+        self.cerrar_conexion(con)
         return stats
 
     # ------------------------------------------------------------

@@ -120,7 +120,7 @@ class HistorialGeneralRepository(AUPRepository):
             """, (limite,))
         
         rows = cur.fetchall()
-        con.close()
+        self.cerrar_conexion(con)
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------
@@ -154,7 +154,7 @@ class HistorialGeneralRepository(AUPRepository):
             LIMIT ?
         """, (f"%{texto}%", f"%{texto}%", f"%{texto}%", limite))
         rows = cur.fetchall()
-        con.close()
+        self.cerrar_conexion(con)
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------
@@ -179,7 +179,7 @@ class HistorialGeneralRepository(AUPRepository):
             SELECT * FROM historial_general WHERE id_evento = ?
         """, (id_evento,))
         row = cur.fetchone()
-        con.close()
+        self.cerrar_conexion(con)
         
         if not row:
             raise ValueError(f"Evento {id_evento} no existe.")
@@ -216,7 +216,7 @@ class HistorialGeneralRepository(AUPRepository):
             ORDER BY id_evento ASC
         """, (entidad, id_entidad))
         rows = cur.fetchall()
-        con.close()
+        self.cerrar_conexion(con)
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------
@@ -266,7 +266,7 @@ class HistorialGeneralRepository(AUPRepository):
         """)
         stats["top_usuarios"] = {row["usuario"]: row["count"] for row in cur.fetchall()}
         
-        con.close()
+        self.cerrar_conexion(con)
         return stats
 
 
@@ -349,7 +349,7 @@ class HashRepository(AUPRepository):
             """, (limite,))
         
         rows = cur.fetchall()
-        con.close()
+        self.cerrar_conexion(con)
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------
@@ -391,7 +391,7 @@ class HashRepository(AUPRepository):
         """, (tabla_origen, id_registro))
         hash_event = cur.fetchone()
 
-        con.close()
+        self.cerrar_conexion(con)
         
         if not hash_reg or not hash_event:
             return {
@@ -431,7 +431,7 @@ class HashRepository(AUPRepository):
             FROM hash_registros
         """)
         registros = cur.fetchall()
-        con.close()
+        self.cerrar_conexion(con)
         
         resultados = {
             "total_verificados": 0,
@@ -487,7 +487,7 @@ class HashRepository(AUPRepository):
         """)
         stats["por_tabla"] = {row["tabla_origen"]: row["count"] for row in cur.fetchall()}
         
-        con.close()
+        self.cerrar_conexion(con)
         return stats
 
 

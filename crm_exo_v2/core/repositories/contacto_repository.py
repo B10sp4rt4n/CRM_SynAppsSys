@@ -118,7 +118,7 @@ class ContactoRepository(AUPRepository):
             con.rollback()
             raise e
         finally:
-            con.close()
+            self.cerrar_conexion(con)
 
     # ------------------------------------------------------------
     # Listado de contactos por empresa
@@ -166,7 +166,7 @@ class ContactoRepository(AUPRepository):
             return resultado["total"] if resultado else 0
         
         finally:
-            con.close()
+            self.cerrar_conexion(con)
 
     # ------------------------------------------------------------
     # Búsqueda de contactos
@@ -208,7 +208,7 @@ class ContactoRepository(AUPRepository):
             return [dict(r) for r in rows]
         
         finally:
-            con.close()
+            self.cerrar_conexion(con)
 
     # ------------------------------------------------------------
     # Obtener contacto por ID
@@ -237,7 +237,11 @@ class ContactoRepository(AUPRepository):
             return dict(row) if row else None
         
         finally:
-            con.close()
+            self.cerrar_conexion(con)
+    
+    def obtener_por_id(self, id_contacto: int) -> Optional[Dict]:
+        """Alias de obtener_contacto para compatibilidad con tests"""
+        return self.obtener_contacto(id_contacto)
 
     # ------------------------------------------------------------
     # Actualizar contacto
@@ -278,7 +282,7 @@ class ContactoRepository(AUPRepository):
         cur = con.cursor()
         cur.execute("SELECT id_empresa, nombre FROM empresas LIMIT 1")
         empresa = cur.fetchone()
-        con.close()
+        self.cerrar_conexion(con)
         
         if not empresa:
             print("\n⚠️  No hay empresas registradas. Primero ejecuta EmpresaRepository.demo()")

@@ -75,33 +75,33 @@ class ProspectoRepository(AUPRepository):
         cur.execute("SELECT id_empresa, nombre FROM empresas WHERE id_empresa = ?", (id_empresa,))
         empresa = cur.fetchone()
         if not empresa:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"La empresa con ID {id_empresa} no existe.")
 
         # 2️⃣ Validar contacto y pertenencia (REGLA R1)
         cur.execute("SELECT id_contacto, nombre, id_empresa FROM contactos WHERE id_contacto = ?", (id_contacto,))
         contacto = cur.fetchone()
         if not contacto:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"El contacto con ID {id_contacto} no existe.")
         if contacto["id_empresa"] != id_empresa:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"El contacto '{contacto['nombre']}' no pertenece a la empresa seleccionada.")
 
         # 3️⃣ Evitar duplicados activos
         cur.execute("""
             SELECT id_prospecto FROM prospectos
-            WHERE id_empresa = ? AND id_contacto = ? AND estado = 'Activo'
+            WHERE id_empresa = ? AND id_contacto = ? AND estado NOT IN ('convertido', 'perdido')
         """, (id_empresa, id_contacto))
         if cur.fetchone():
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError("Ya existe un prospecto activo para esta empresa y contacto.")
 
         # 4️⃣ Crear prospecto
         data = {
             "id_empresa": id_empresa,
             "id_contacto": id_contacto,
-            "estado": "Activo",
+            "estado": "nuevo",  # Estado inicial
             "origen": origen,
             "fecha_creacion": datetime.utcnow().isoformat()
         }
@@ -115,8 +115,34 @@ class ProspectoRepository(AUPRepository):
         # Trazabilidad forense (heredado de AUPRepository)
         self.registrar_evento(con, id_prospecto, "CREAR", data)
         
-        con.close()
+        self.cerrar_conexion(con)
         return id_prospecto
+
+    # ------------------------------------------------------------
+    # Consultas
+    # ------------------------------------------------------------
+    def obtener_por_id(self, id_prospecto):
+        """
+        Obtiene un prospecto por su ID.
+        
+        Args:
+            id_prospecto: ID del prospecto
+            
+        Returns:
+            dict: Datos del prospecto o None si no existe
+        """
+        con = self.conectar()
+        cur = con.cursor()
+        
+        cur.execute("""
+            SELECT * FROM prospectos
+            WHERE id_prospecto = ?
+        """, (id_prospecto,))
+        
+        prospecto = cur.fetchone()
+        self.cerrar_conexion(con)
+        
+        return dict(prospecto) if prospecto else None
 
     # ------------------------------------------------------------
     # Cambiar estado (para cierre o conversión)
@@ -143,7 +169,7 @@ class ProspectoRepository(AUPRepository):
         cur.execute("SELECT * FROM prospectos WHERE id_prospecto = ?", (id_prospecto,))
         p = cur.fetchone()
         if not p:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"Prospecto {id_prospecto} no existe.")
 
         cur.execute("""
@@ -154,7 +180,7 @@ class ProspectoRepository(AUPRepository):
         # Registro forense del cambio
         self.registrar_evento(con, id_prospecto, "CAMBIO_ESTADO", {"estado": nuevo_estado})
         
-        con.close()
+        self.cerrar_conexion(con)
 
     # ------------------------------------------------------------
     # Listar prospectos activos
@@ -178,7 +204,7 @@ class ProspectoRepository(AUPRepository):
             ORDER BY p.fecha_creacion DESC
         """)
         rows = cur.fetchall()
-        con.close()
+        self.cerrar_conexion(con)
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------
@@ -206,7 +232,7 @@ class ProspectoRepository(AUPRepository):
             ORDER BY p.fecha_creacion DESC
         """, (f"%{texto}%", f"%{texto}%"))
         rows = cur.fetchall()
-        con.close()
+        self.cerrar_conexion(con)
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------
@@ -243,7 +269,7 @@ class ProspectoRepository(AUPRepository):
             WHERE p.id_prospecto = ?
         """, (id_prospecto,))
         row = cur.fetchone()
-        con.close()
+        self.cerrar_conexion(con)
         
         if not row:
             raise ValueError(f"Prospecto {id_prospecto} no existe.")
@@ -286,7 +312,7 @@ class ProspectoRepository(AUPRepository):
         """)
         stats["por_origen"] = {row["origen"]: row["total"] for row in cur.fetchall()}
         
-        con.close()
+        self.cerrar_conexion(con)
         return stats
 
     # ------------------------------------------------------------

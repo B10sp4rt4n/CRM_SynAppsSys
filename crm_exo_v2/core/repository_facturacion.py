@@ -89,18 +89,18 @@ class OrdenCompraRepository(AUPRepository):
         cur.execute("SELECT id_oportunidad, etapa FROM oportunidades WHERE id_oportunidad = ?", (id_oportunidad,))
         opp = cur.fetchone()
         if not opp:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"Oportunidad {id_oportunidad} no existe.")
 
         # 2️⃣ Validar número de OC único
         cur.execute("SELECT id_oc FROM ordenes_compra WHERE numero_oc = ?", (numero_oc,))
         if cur.fetchone():
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"Ya existe una OC con número '{numero_oc}'")
 
         # 3️⃣ Validar monto
         if monto_oc <= 0:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"Monto de OC debe ser mayor a 0 (recibido: {monto_oc})")
 
         # 4️⃣ Preparar datos
@@ -129,7 +129,7 @@ class OrdenCompraRepository(AUPRepository):
         data["hash_integridad"] = hash_integridad
         self.registrar_evento(con, id_oc, "CREAR_OC", data)
         
-        con.close()
+        self.cerrar_conexion(con)
         return id_oc, hash_integridad
 
     # ------------------------------------------------------------
@@ -163,7 +163,7 @@ class OrdenCompraRepository(AUPRepository):
             WHERE oc.id_oc = ?
         """, (id_oc,))
         row = cur.fetchone()
-        con.close()
+        self.cerrar_conexion(con)
         
         if not row:
             raise ValueError(f"Orden de Compra {id_oc} no existe.")
@@ -219,7 +219,7 @@ class OrdenCompraRepository(AUPRepository):
             """)
         
         rows = cur.fetchall()
-        con.close()
+        self.cerrar_conexion(con)
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------
@@ -254,7 +254,7 @@ class OrdenCompraRepository(AUPRepository):
             for row in cur.fetchall()
         }
         
-        con.close()
+        self.cerrar_conexion(con)
         return stats
 
 
@@ -322,18 +322,18 @@ class FacturaRepository(AUPRepository):
         cur.execute("SELECT id_oc, id_oportunidad, numero_oc FROM ordenes_compra WHERE id_oc = ?", (id_oc,))
         oc = cur.fetchone()
         if not oc:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"REGLA R5 VIOLADA: La Orden de Compra {id_oc} no existe. No se puede facturar sin OC.")
 
         # 2️⃣ Validar UUID único
         cur.execute("SELECT id_factura FROM facturas WHERE uuid = ?", (uuid,))
         if cur.fetchone():
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"Ya existe una factura con UUID '{uuid}'")
 
         # 3️⃣ Validar monto
         if monto_total <= 0:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"Monto total debe ser mayor a 0 (recibido: {monto_total})")
 
         # 4️⃣ Preparar datos
@@ -367,7 +367,7 @@ class FacturaRepository(AUPRepository):
         data["hash_integridad"] = hash_integridad
         self.registrar_evento(con, id_factura, "CREAR_FACTURA", data)
         
-        con.close()
+        self.cerrar_conexion(con)
         return id_factura, hash_integridad
 
     # ------------------------------------------------------------
@@ -391,7 +391,7 @@ class FacturaRepository(AUPRepository):
         cur.execute("SELECT * FROM facturas WHERE id_factura = ?", (id_factura,))
         f = cur.fetchone()
         if not f:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"Factura {id_factura} no existe.")
         
         # Recalcular hash
@@ -399,7 +399,7 @@ class FacturaRepository(AUPRepository):
         raw = json.dumps(data, sort_keys=True, ensure_ascii=False)
         nuevo_hash = hashlib.sha256(raw.encode()).hexdigest()
         
-        con.close()
+        self.cerrar_conexion(con)
         
         # Nota: El hash original está en historial_general, no en tabla facturas
         # Esta función sirve para generar hash actual para comparación futura
@@ -444,7 +444,7 @@ class FacturaRepository(AUPRepository):
             WHERE f.id_factura = ?
         """, (id_factura,))
         row = cur.fetchone()
-        con.close()
+        self.cerrar_conexion(con)
         
         if not row:
             raise ValueError(f"Factura {id_factura} no existe.")
@@ -505,7 +505,7 @@ class FacturaRepository(AUPRepository):
             """)
         
         rows = cur.fetchall()
-        con.close()
+        self.cerrar_conexion(con)
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------
@@ -540,7 +540,7 @@ class FacturaRepository(AUPRepository):
             for row in cur.fetchall()
         }
         
-        con.close()
+        self.cerrar_conexion(con)
         return stats
 
 

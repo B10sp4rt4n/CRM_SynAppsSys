@@ -103,17 +103,17 @@ class CotizadorRepository(AUPRepository):
         """, (id_oportunidad,))
         opp = cur.fetchone()
         if not opp:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"REGLA R4 VIOLADA: La oportunidad con ID {id_oportunidad} no existe.")
 
         # 2️⃣ Validar modo de cotización
         if modo not in ("minimo", "generico", "externo"):
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"Modo inválido '{modo}'. Debe ser: 'minimo', 'generico' o 'externo'")
 
         # 3️⃣ Validar monto
         if monto_total <= 0:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"Monto total debe ser mayor a 0 (recibido: {monto_total})")
 
         # 4️⃣ Preparar datos
@@ -147,7 +147,7 @@ class CotizadorRepository(AUPRepository):
         # 7️⃣ Registrar evento + hash (trazabilidad doble heredada)
         self.registrar_evento(con, id_cot, "CREAR", data)
         
-        con.close()
+        self.cerrar_conexion(con)
         return id_cot, hash_integridad
 
     # ------------------------------------------------------------
@@ -175,7 +175,7 @@ class CotizadorRepository(AUPRepository):
         cur.execute("SELECT * FROM cotizaciones WHERE id_cotizacion = ?", (id_cotizacion,))
         cot = cur.fetchone()
         if not cot:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"Cotización {id_cotizacion} no existe.")
 
         # Recalcular hash si cambian valores críticos
@@ -197,7 +197,7 @@ class CotizadorRepository(AUPRepository):
         # Registro forense del cambio
         self.registrar_evento(con, id_cotizacion, "ACTUALIZAR", campos)
         
-        con.close()
+        self.cerrar_conexion(con)
 
     # ------------------------------------------------------------
     # Aprobar cotización
@@ -218,15 +218,15 @@ class CotizadorRepository(AUPRepository):
         cur.execute("SELECT estado FROM cotizaciones WHERE id_cotizacion = ?", (id_cotizacion,))
         cot = cur.fetchone()
         if not cot:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"Cotización {id_cotizacion} no existe.")
         
         if cot["estado"] == "Aprobada":
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError(f"Cotización {id_cotizacion} ya está aprobada.")
         
         self.actualizar_cotizacion(id_cotizacion, {"estado": "Aprobada"})
-        con.close()
+        self.cerrar_conexion(con)
 
     # ------------------------------------------------------------
     # Listar cotizaciones por oportunidad o global
@@ -283,7 +283,7 @@ class CotizadorRepository(AUPRepository):
             """)
         
         rows = cur.fetchall()
-        con.close()
+        self.cerrar_conexion(con)
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------
@@ -317,7 +317,7 @@ class CotizadorRepository(AUPRepository):
             WHERE c.id_cotizacion = ?
         """, (id_cotizacion,))
         row = cur.fetchone()
-        con.close()
+        self.cerrar_conexion(con)
         
         if not row:
             raise ValueError(f"Cotización {id_cotizacion} no existe.")
@@ -347,7 +347,7 @@ class CotizadorRepository(AUPRepository):
         cur.execute("SELECT * FROM cotizaciones WHERE id_cotizacion = ?", (id_cotizacion,))
         cot = cur.fetchone()
         if not cot:
-            con.close()
+            self.cerrar_conexion(con)
             raise ValueError("Cotización no encontrada.")
         
         # Recalcular hash actual
@@ -355,7 +355,7 @@ class CotizadorRepository(AUPRepository):
         raw = json.dumps(data, sort_keys=True, ensure_ascii=False)
         nuevo_hash = hashlib.sha256(raw.encode()).hexdigest()
         
-        con.close()
+        self.cerrar_conexion(con)
         
         return {
             "id_cotizacion": id_cotizacion,
@@ -403,7 +403,7 @@ class CotizadorRepository(AUPRepository):
         cur.execute("SELECT SUM(monto_total) as total FROM cotizaciones WHERE estado = 'Aprobada'")
         stats["valor_aprobado"] = cur.fetchone()["total"] or 0
         
-        con.close()
+        self.cerrar_conexion(con)
         return stats
 
     # ------------------------------------------------------------
