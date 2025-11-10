@@ -324,7 +324,7 @@ class HashRepository(AUPRepository):
             cur.execute("""
                 SELECT 
                     id_hash, 
-                    tabla_origen, 
+                    tabla_origen AS entidad, 
                     id_registro,
                     substr(hash_sha256,1,16) AS hash_corto,
                     hash_sha256,
@@ -338,7 +338,7 @@ class HashRepository(AUPRepository):
             cur.execute("""
                 SELECT 
                     id_hash, 
-                    tabla_origen, 
+                    tabla_origen AS entidad, 
                     id_registro,
                     substr(hash_sha256,1,16) AS hash_corto,
                     hash_sha256,
