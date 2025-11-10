@@ -57,20 +57,25 @@ class OportunidadRepository(AUPRepository):
     # ------------------------------------------------------------
     # Crear oportunidad (REGLA R2)
     # ------------------------------------------------------------
-    def crear_oportunidad(self, id_prospecto, nombre, monto_estimado, etapa="Inicial", probabilidad=0):
+    def crear_oportunidad(self, id_prospecto, titulo_o_nombre=None, monto_o_estimado=None,
+                         titulo=None, nombre=None, monto=None, monto_estimado=None,
+                         etapa="Inicial", probabilidad=0, descripcion=None):
         """
         Crea una nueva oportunidad para un prospecto activo.
         
         VALIDACIONES REGLA R2:
         - Prospecto debe existir
-        - Prospecto debe estar en estado "Activo" (o "Cliente")
-        - No debe existir otra oportunidad con el mismo nombre para este prospecto
+        - Prospecto debe estar activo (no convertido ni perdido)
+        - No debe existir otra oportunidad con el mismo título para este prospecto
         
         Args:
             id_prospecto: FK a tabla prospectos
-            nombre: Nombre descriptivo de la oportunidad
-            monto_estimado: Valor estimado en moneda local
-            etapa: Etapa del ciclo de venta (Inicial, Negociación, Propuesta, Ganada, Perdida)
+            titulo_o_nombre: Posicional 1 - título de la oportunidad
+            monto_o_estimado: Posicional 2 - monto estimado
+            titulo/nombre: Nombre descriptivo de la oportunidad (kwargs)
+            monto/monto_estimado: Valor estimado en moneda local (kwargs)
+            descripcion: Descripción detallada (opcional)
+            etapa: Etapa del ciclo de venta  
             probabilidad: % de cierre (0-100)
         
         Returns:
@@ -79,6 +84,15 @@ class OportunidadRepository(AUPRepository):
         Raises:
             ValueError: Si falla validación REGLA R2 o hay duplicados
         """
+        # Compatibilidad: soporta args posicionales y kwargs
+        titulo_final = titulo_o_nombre or titulo or nombre
+        monto_final = monto_o_estimado or monto or monto_estimado
+        
+        if not titulo_final:
+            raise ValueError("Debe proporcionar un título/nombre para la oportunidad")
+        if monto_final is None:
+            raise ValueError("Debe proporcionar un monto estimado para la oportunidad")
+        
         con = self.conectar()
         cur = con.cursor()
 
@@ -94,34 +108,36 @@ class OportunidadRepository(AUPRepository):
             raise ValueError(f"El prospecto con ID {id_prospecto} no existe.")
         
         # 2️⃣ Validar prospecto está activo (REGLA R2)
-        if p["estado"] not in ["Activo", "Cliente"]:
+        # Estados válidos para crear oportunidad: nuevo, contactado, calificado (no convertido)
+        if p["estado"] in ["convertido", "perdido"]:
             self.cerrar_conexion(con)
             raise ValueError(
-                f"REGLA R2 VIOLADA: El prospecto {id_prospecto} no está activo "
-                f"(estado actual: '{p['estado']}'). Solo prospectos Activos pueden generar oportunidades."
+                f"REGLA R2 VIOLADA: El prospecto {id_prospecto} tiene estado '{p['estado']}'. "
+                f"Solo prospectos activos pueden generar oportunidades."
             )
 
-        # 3️⃣ Verificar duplicado (nombre de oportunidad dentro del mismo prospecto)
+        # 3️⃣ Verificar duplicado (titulo de oportunidad dentro del mismo prospecto)
         cur.execute("""
             SELECT id_oportunidad FROM oportunidades
-            WHERE id_prospecto = ? AND nombre = ?
-        """, (id_prospecto, nombre))
+            WHERE id_prospecto = ? AND titulo = ?
+        """, (id_prospecto, titulo_final))
         if cur.fetchone():
             self.cerrar_conexion(con)
-            raise ValueError(f"Ya existe una oportunidad con el nombre '{nombre}' para este prospecto.")
+            raise ValueError(f"Ya existe una oportunidad con el título '{titulo_final}' para este prospecto.")
 
         # 4️⃣ Crear oportunidad
         data = {
             "id_prospecto": id_prospecto,
-            "nombre": nombre,
+            "titulo": titulo_final,
+            "descripcion": descripcion,
             "etapa": etapa,
             "probabilidad": probabilidad,
-            "monto_estimado": monto_estimado,
+            "monto": monto_final,
             "fecha_creacion": datetime.utcnow().isoformat()
         }
         cur.execute("""
-            INSERT INTO oportunidades (id_prospecto, nombre, etapa, probabilidad, monto_estimado, fecha_creacion)
-            VALUES (:id_prospecto, :nombre, :etapa, :probabilidad, :monto_estimado, :fecha_creacion)
+            INSERT INTO oportunidades (id_prospecto, titulo, descripcion, etapa, probabilidad, monto, fecha_creacion)
+            VALUES (:id_prospecto, :titulo, :descripcion, :etapa, :probabilidad, :monto, :fecha_creacion)
         """, data)
         con.commit()
         id_opp = cur.lastrowid
@@ -224,23 +240,39 @@ class OportunidadRepository(AUPRepository):
 
         # 1️⃣ Actualizar oportunidad a Ganada
         cur.execute("""
-            UPDATE oportunidades SET etapa = 'Ganada', probabilidad = 100
+            UPDATE oportunidades SET etapa = 'Ganada', estado = 'ganada', probabilidad = 100
             WHERE id_oportunidad = ?
         """, (id_oportunidad,))
         con.commit()
-        self.registrar_evento(con, id_oportunidad, "MARCAR_GANADA", {"etapa": "Ganada", "probabilidad": 100})
+        self.registrar_evento(con, id_oportunidad, "MARCAR_GANADA", {"etapa": "Ganada", "estado": "ganada", "probabilidad": 100})
 
         # 2️⃣ REGLA R3: Convertir prospecto a Cliente
         cur.execute("""
-            UPDATE prospectos SET estado = 'Cliente' WHERE id_prospecto = ?
+            UPDATE prospectos SET estado = 'convertido' WHERE id_prospecto = ?
         """, (id_prospecto,))
+        
+        # 3️⃣ REGLA R3: Actualizar empresa a tipo 'cliente'
+        cur.execute("""
+            UPDATE empresas SET tipo_cliente = 'cliente'
+            WHERE id_empresa = (SELECT id_empresa FROM prospectos WHERE id_prospecto = ?)
+        """, (id_prospecto,))
+        
+        # 4️⃣ REGLA R3: Vincular oportunidad al cliente (id_empresa)
+        cur.execute("""
+            UPDATE oportunidades SET id_cliente = (
+                SELECT id_empresa FROM prospectos WHERE id_prospecto = ?
+            )
+            WHERE id_oportunidad = ?
+        """, (id_prospecto, id_oportunidad))
+        
         con.commit()
         self.registrar_evento(con, id_prospecto, "CONVERSION_CLIENTE", {
-            "estado": "Cliente",
+            "estado": "convertido",
             "razon": f"Oportunidad {id_oportunidad} ganada"
         })
         
         self.cerrar_conexion(con)
+        return True
 
     # ------------------------------------------------------------
     # Listado general y por prospecto
@@ -339,6 +371,10 @@ class OportunidadRepository(AUPRepository):
             raise ValueError(f"Oportunidad {id_oportunidad} no existe.")
         
         return dict(row)
+    
+    def obtener_por_id(self, id_oportunidad):
+        """Alias de obtener() para compatibilidad con tests"""
+        return self.obtener(id_oportunidad)
 
     # ------------------------------------------------------------
     # Estadísticas del pipeline

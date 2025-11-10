@@ -65,7 +65,7 @@ def db_connection(tmp_path):
         id_contacto INTEGER,
         origen TEXT,
         fuente TEXT,
-        estado TEXT DEFAULT 'nuevo' CHECK(estado IN ('nuevo', 'contactado', 'calificado', 'convertido', 'Activo')),
+        estado TEXT DEFAULT 'nuevo' CHECK(estado IN ('nuevo', 'contactado', 'calificado', 'convertido', 'Activo', 'Cliente', 'perdido')),
         fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (id_empresa) REFERENCES empresas(id_empresa),
         FOREIGN KEY (id_contacto) REFERENCES contactos(id_contacto)
