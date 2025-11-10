@@ -267,36 +267,102 @@ with tab1:
 with tab2:
     st.header("🏢 Gestión de Empresas")
     
+    # Selector de modo: Alta o Edición
+    modo = st.radio("Modo", ["➕ Alta de Empresa", "✏️ Editar Empresa"], horizontal=True)
+    
     col_form, col_list = st.columns([1, 1])
     
     with col_form:
-        st.subheader("Alta de Empresa")
+        if modo == "➕ Alta de Empresa":
+            st.subheader("Alta de Empresa")
+            
+            with st.form("alta_empresa"):
+                nombre = st.text_input("Nombre de empresa *", placeholder="Ej: ACME Corporation")
+                rfc = st.text_input("RFC", placeholder="Ej: ACM123456ABC")
+                sector = st.text_input("Sector", placeholder="Ej: Tecnología, Manufactura")
+                telefono = st.text_input("Teléfono", placeholder="Ej: +52 55 1234 5678")
+                correo = st.text_input("Correo", placeholder="Ej: contacto@empresa.com")
+                submitted_emp = st.form_submit_button("✅ Registrar empresa", use_container_width=True)
+            
+            if submitted_emp:
+                if not nombre:
+                    st.error("❌ El nombre de la empresa es obligatorio")
+                else:
+                    con = conectar()
+                    cur = con.cursor()
+                    
+                    # Verificar duplicados
+                    cur.execute("SELECT COUNT(*) as total FROM empresas WHERE LOWER(nombre) = LOWER(?)", (nombre,))
+                    existe = cur.fetchone()["total"] > 0
+                    
+                    if existe:
+                        st.error(f"❌ Ya existe una empresa con el nombre '{nombre}'. Por favor usa un nombre diferente.")
+                        con.close()
+                    else:
+                        cur.execute("""
+                            INSERT INTO empresas (nombre, rfc, sector, telefono, correo)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (nombre, rfc or None, sector or None, telefono or None, correo or None))
+                        con.commit()
+                        id_emp = cur.lastrowid
+                        h = registrar_evento(con, "empresa", id_emp, "CREAR", f"Empresa: {nombre}")
+                        con.close()
+                        st.success(f"✅ Empresa '{nombre}' registrada correctamente")
+                        st.caption(f"🔐 Hash forense: {h[:16]}...")
+                        st.rerun()
         
-        with st.form("alta_empresa"):
-            nombre = st.text_input("Nombre de empresa *", placeholder="Ej: ACME Corporation")
-            rfc = st.text_input("RFC", placeholder="Ej: ACM123456ABC")
-            sector = st.text_input("Sector", placeholder="Ej: Tecnología, Manufactura")
-            telefono = st.text_input("Teléfono", placeholder="Ej: +52 55 1234 5678")
-            correo = st.text_input("Correo", placeholder="Ej: contacto@empresa.com")
-            submitted_emp = st.form_submit_button("✅ Registrar empresa", use_container_width=True)
-        
-        if submitted_emp:
-            if not nombre:
-                st.error("❌ El nombre de la empresa es obligatorio")
+        else:  # Modo edición
+            st.subheader("Editar Empresa")
+            
+            con = conectar()
+            empresas_edit = pd.read_sql("SELECT id_empresa, nombre, rfc, sector, telefono, correo FROM empresas ORDER BY nombre", con)
+            con.close()
+            
+            if len(empresas_edit) == 0:
+                st.info("No hay empresas para editar.")
             else:
-                con = conectar()
-                cur = con.cursor()
-                cur.execute("""
-                    INSERT INTO empresas (nombre, rfc, sector, telefono, correo)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (nombre, rfc or None, sector or None, telefono or None, correo or None))
-                con.commit()
-                id_emp = cur.lastrowid
-                h = registrar_evento(con, "empresa", id_emp, "CREAR", f"Empresa: {nombre}")
-                con.close()
-                st.success(f"✅ Empresa '{nombre}' registrada correctamente")
-                st.caption(f"🔐 Hash forense: {h[:16]}...")
-                st.rerun()
+                empresa_sel = st.selectbox("Selecciona empresa a editar", empresas_edit["nombre"].tolist())
+                empresa_data = empresas_edit[empresas_edit["nombre"] == empresa_sel].iloc[0]
+                
+                with st.form("editar_empresa"):
+                    nombre_edit = st.text_input("Nombre de empresa *", value=empresa_data["nombre"])
+                    rfc_edit = st.text_input("RFC", value=empresa_data["rfc"] or "")
+                    sector_edit = st.text_input("Sector", value=empresa_data["sector"] or "")
+                    telefono_edit = st.text_input("Teléfono", value=empresa_data["telefono"] or "")
+                    correo_edit = st.text_input("Correo", value=empresa_data["correo"] or "")
+                    submitted_edit = st.form_submit_button("💾 Guardar cambios", use_container_width=True)
+                
+                if submitted_edit:
+                    if not nombre_edit:
+                        st.error("❌ El nombre de la empresa es obligatorio")
+                    else:
+                        con = conectar()
+                        cur = con.cursor()
+                        
+                        # Verificar duplicados (excluyendo la empresa actual)
+                        cur.execute("""
+                            SELECT COUNT(*) as total FROM empresas 
+                            WHERE LOWER(nombre) = LOWER(?) AND id_empresa != ?
+                        """, (nombre_edit, int(empresa_data["id_empresa"])))
+                        existe = cur.fetchone()["total"] > 0
+                        
+                        if existe:
+                            st.error(f"❌ Ya existe otra empresa con el nombre '{nombre_edit}'.")
+                            con.close()
+                        else:
+                            cur.execute("""
+                                UPDATE empresas 
+                                SET nombre = ?, rfc = ?, sector = ?, telefono = ?, correo = ?
+                                WHERE id_empresa = ?
+                            """, (nombre_edit, rfc_edit or None, sector_edit or None, 
+                                  telefono_edit or None, correo_edit or None, int(empresa_data["id_empresa"])))
+                            con.commit()
+                            h = registrar_evento(con, "empresa", int(empresa_data["id_empresa"]), 
+                                               "ACTUALIZAR", f"Empresa actualizada: {nombre_edit}")
+                            con.close()
+                            st.success(f"✅ Empresa '{nombre_edit}' actualizada correctamente")
+                            st.caption(f"🔐 Hash forense: {h[:16]}...")
+                            st.rerun()
     
     with col_list:
         st.subheader("Empresas Registradas")
@@ -340,37 +406,94 @@ with tab3:
     if len(empresas) == 0:
         st.warning("⚠️ Primero debes registrar al menos una empresa en la pestaña 'Empresas'.")
     else:
+        # Selector de modo
+        modo_contacto = st.radio("Modo", ["➕ Alta de Contacto", "✏️ Editar Contacto"], horizontal=True)
+        
         col_form, col_list = st.columns([1, 1])
         
         with col_form:
-            st.subheader("Alta de Contacto")
+            if modo_contacto == "➕ Alta de Contacto":
+                st.subheader("Alta de Contacto")
+                
+                with st.form("alta_contacto"):
+                    empresa_sel = st.selectbox("Empresa *", empresas["nombre"].tolist())
+                    id_empresa = int(empresas.loc[empresas["nombre"] == empresa_sel, "id_empresa"].iloc[0])
+                    nombre_c = st.text_input("Nombre completo *", placeholder="Ej: Juan Pérez García")
+                    correo_c = st.text_input("Correo *", placeholder="Ej: juan.perez@empresa.com")
+                    telefono_c = st.text_input("Teléfono", placeholder="Ej: +52 55 9876 5432")
+                    puesto_c = st.text_input("Puesto", placeholder="Ej: Director de Compras")
+                    submitted_con = st.form_submit_button("✅ Registrar contacto", use_container_width=True)
+                
+                if submitted_con:
+                    if not nombre_c or not correo_c:
+                        st.error("❌ Nombre y correo son obligatorios")
+                    else:
+                        con = conectar()
+                        cur = con.cursor()
+                        cur.execute("""
+                            INSERT INTO contactos (id_empresa, nombre, correo, telefono, puesto)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (id_empresa, nombre_c, correo_c, telefono_c or None, puesto_c or None))
+                        con.commit()
+                        id_con = cur.lastrowid
+                        h = registrar_evento(con, "contacto", id_con, "CREAR", f"Contacto: {nombre_c} en {empresa_sel}")
+                        con.close()
+                        st.success(f"✅ Contacto '{nombre_c}' registrado correctamente")
+                        st.caption(f"🔐 Hash forense: {h[:16]}...")
+                        st.rerun()
             
-            with st.form("alta_contacto"):
-                empresa_sel = st.selectbox("Empresa *", empresas["nombre"].tolist())
-                id_empresa = int(empresas.loc[empresas["nombre"] == empresa_sel, "id_empresa"].iloc[0])
-                nombre_c = st.text_input("Nombre completo *", placeholder="Ej: Juan Pérez García")
-                correo_c = st.text_input("Correo *", placeholder="Ej: juan.perez@empresa.com")
-                telefono_c = st.text_input("Teléfono", placeholder="Ej: +52 55 9876 5432")
-                puesto_c = st.text_input("Puesto", placeholder="Ej: Director de Compras")
-                submitted_con = st.form_submit_button("✅ Registrar contacto", use_container_width=True)
-            
-            if submitted_con:
-                if not nombre_c or not correo_c:
-                    st.error("❌ Nombre y correo son obligatorios")
+            else:  # Modo edición
+                st.subheader("Editar Contacto")
+                
+                con = conectar()
+                contactos_edit = pd.read_sql("""
+                    SELECT c.id_contacto, c.id_empresa, e.nombre as empresa, 
+                           c.nombre, c.correo, c.telefono, c.puesto
+                    FROM contactos c
+                    JOIN empresas e ON e.id_empresa = c.id_empresa
+                    ORDER BY c.nombre
+                """, con)
+                con.close()
+                
+                if len(contactos_edit) == 0:
+                    st.info("No hay contactos para editar.")
                 else:
-                    con = conectar()
-                    cur = con.cursor()
-                    cur.execute("""
-                        INSERT INTO contactos (id_empresa, nombre, correo, telefono, puesto)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (id_empresa, nombre_c, correo_c, telefono_c or None, puesto_c or None))
-                    con.commit()
-                    id_con = cur.lastrowid
-                    h = registrar_evento(con, "contacto", id_con, "CREAR", f"Contacto: {nombre_c} en {empresa_sel}")
-                    con.close()
-                    st.success(f"✅ Contacto '{nombre_c}' registrado correctamente")
-                    st.caption(f"🔐 Hash forense: {h[:16]}...")
-                    st.rerun()
+                    contacto_sel = st.selectbox(
+                        "Selecciona contacto a editar",
+                        contactos_edit.apply(lambda x: f"{x['nombre']} ({x['empresa']})", axis=1).tolist()
+                    )
+                    idx = contactos_edit.apply(lambda x: f"{x['nombre']} ({x['empresa']})", axis=1).tolist().index(contacto_sel)
+                    contacto_data = contactos_edit.iloc[idx]
+                    
+                    with st.form("editar_contacto"):
+                        empresa_edit = st.selectbox("Empresa *", empresas["nombre"].tolist(), 
+                                                   index=empresas["nombre"].tolist().index(contacto_data["empresa"]))
+                        id_empresa_edit = int(empresas.loc[empresas["nombre"] == empresa_edit, "id_empresa"].iloc[0])
+                        nombre_edit = st.text_input("Nombre completo *", value=contacto_data["nombre"])
+                        correo_edit = st.text_input("Correo *", value=contacto_data["correo"] or "")
+                        telefono_edit = st.text_input("Teléfono", value=contacto_data["telefono"] or "")
+                        puesto_edit = st.text_input("Puesto", value=contacto_data["puesto"] or "")
+                        submitted_edit_c = st.form_submit_button("💾 Guardar cambios", use_container_width=True)
+                    
+                    if submitted_edit_c:
+                        if not nombre_edit or not correo_edit:
+                            st.error("❌ Nombre y correo son obligatorios")
+                        else:
+                            con = conectar()
+                            cur = con.cursor()
+                            cur.execute("""
+                                UPDATE contactos 
+                                SET id_empresa = ?, nombre = ?, correo = ?, telefono = ?, puesto = ?
+                                WHERE id_contacto = ?
+                            """, (id_empresa_edit, nombre_edit, correo_edit, telefono_edit or None, 
+                                  puesto_edit or None, int(contacto_data["id_contacto"])))
+                            con.commit()
+                            h = registrar_evento(con, "contacto", int(contacto_data["id_contacto"]), 
+                                               "ACTUALIZAR", f"Contacto actualizado: {nombre_edit}")
+                            con.close()
+                            st.success(f"✅ Contacto '{nombre_edit}' actualizado correctamente")
+                            st.caption(f"🔐 Hash forense: {h[:16]}...")
+                            st.rerun()
         
         with col_list:
             st.subheader("Contactos Registrados")
