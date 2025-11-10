@@ -25,7 +25,7 @@ if str(CORE_DIR) not in sys.path:
 
 from repository_base import AUPRepository
 import sqlite3
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Optional, Dict
 
 class ProspectoRepository(AUPRepository):
@@ -104,7 +104,7 @@ class ProspectoRepository(AUPRepository):
             "id_contacto": id_contacto,
             "estado": "nuevo",  # Estado inicial
             "origen": origen,
-            "fecha_creacion": datetime.utcnow().isoformat()
+            "fecha_creacion": datetime.now(UTC).isoformat()
         }
         cur.execute("""
             INSERT INTO prospectos (id_empresa, id_contacto, estado, origen, fecha_creacion)

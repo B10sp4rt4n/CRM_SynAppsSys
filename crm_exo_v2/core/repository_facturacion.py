@@ -29,7 +29,7 @@ from repository_base import AUPRepository
 import sqlite3
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, UTC
 
 
 # ================================================================
@@ -107,7 +107,7 @@ class OrdenCompraRepository(AUPRepository):
         data = {
             "id_oportunidad": id_oportunidad,
             "numero_oc": numero_oc,
-            "fecha_emision": datetime.utcnow().isoformat(),
+            "fecha_emision": datetime.now(UTC).isoformat(),
             "monto_oc": monto_oc,
             "estado": "pendiente"
         }
@@ -601,7 +601,7 @@ def demo():
             uuid="123e4567-e89b-12d3-a456-426614174000",
             serie="A",
             folio="0001",
-            fecha_emision=datetime.utcnow().isoformat(),
+            fecha_emision=datetime.now(UTC).isoformat(),
             monto_total=25000,
             moneda="MXN"
         )

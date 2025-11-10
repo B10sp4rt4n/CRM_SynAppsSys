@@ -25,7 +25,7 @@ if str(CORE_DIR) not in sys.path:
 
 from repository_base import AUPRepository
 import sqlite3
-from datetime import datetime
+from datetime import datetime, UTC
 
 
 class OportunidadRepository(AUPRepository):
@@ -133,7 +133,7 @@ class OportunidadRepository(AUPRepository):
             "etapa": etapa,
             "probabilidad": probabilidad,
             "monto": monto_final,
-            "fecha_creacion": datetime.utcnow().isoformat()
+            "fecha_creacion": datetime.now(UTC).isoformat()
         }
         cur.execute("""
             INSERT INTO oportunidades (id_prospecto, titulo, descripcion, etapa, probabilidad, monto, fecha_creacion)

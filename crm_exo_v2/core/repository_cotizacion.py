@@ -29,7 +29,7 @@ from repository_base import AUPRepository
 import sqlite3
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, UTC
 
 
 class CotizadorRepository(AUPRepository):
@@ -123,7 +123,7 @@ class CotizadorRepository(AUPRepository):
             "fuente": fuente,
             "monto_total": monto_total,
             "estado": "borrador",
-            "fecha_emision": datetime.utcnow().isoformat()
+            "fecha_emision": datetime.now(UTC).isoformat()
         }
 
         # 5️⃣ Generar hash de integridad forense (SHA-256)
