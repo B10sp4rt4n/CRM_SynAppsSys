@@ -97,7 +97,7 @@ class CotizadorRepository(AUPRepository):
 
         # 1️⃣ Validar oportunidad existe (REGLA R4)
         cur.execute("""
-            SELECT id_oportunidad, id_prospecto, nombre, etapa 
+            SELECT id_oportunidad, id_prospecto, titulo, etapa 
             FROM oportunidades 
             WHERE id_oportunidad = ?
         """, (id_oportunidad,))
@@ -122,24 +122,21 @@ class CotizadorRepository(AUPRepository):
             "modo": modo,
             "fuente": fuente,
             "monto_total": monto_total,
-            "moneda": moneda,
-            "version": 1,
-            "estado": "Borrador",
-            "fecha_creacion": datetime.utcnow().isoformat(),
-            "notas": notas
+            "estado": "borrador",
+            "fecha_emision": datetime.utcnow().isoformat()
         }
 
         # 5️⃣ Generar hash de integridad forense (SHA-256)
         raw = json.dumps(data, sort_keys=True, ensure_ascii=False)
         hash_integridad = hashlib.sha256(raw.encode()).hexdigest()
-        data["hash_integridad"] = hash_integridad
+        data["hash_cotizacion"] = hash_integridad
 
         # 6️⃣ Insertar cotización
         cur.execute("""
-            INSERT INTO cotizaciones (id_oportunidad, modo, fuente, monto_total, moneda,
-                                      version, estado, fecha_creacion, hash_integridad, notas)
-            VALUES (:id_oportunidad, :modo, :fuente, :monto_total, :moneda,
-                    :version, :estado, :fecha_creacion, :hash_integridad, :notas)
+            INSERT INTO cotizaciones (id_oportunidad, modo, fuente, monto_total,
+                                      estado, fecha_emision, hash_cotizacion)
+            VALUES (:id_oportunidad, :modo, :fuente, :monto_total,
+                    :estado, :fecha_emision, :hash_cotizacion)
         """, data)
         con.commit()
         id_cot = cur.lastrowid
@@ -307,7 +304,7 @@ class CotizadorRepository(AUPRepository):
         cur.execute("""
             SELECT 
                 c.*,
-                o.nombre AS oportunidad_nombre,
+                o.titulo AS oportunidad_nombre,
                 o.etapa AS oportunidad_etapa,
                 e.nombre AS empresa_nombre
             FROM cotizaciones c
@@ -324,6 +321,10 @@ class CotizadorRepository(AUPRepository):
         
         return dict(row)
 
+    def obtener_por_id(self, id_cotizacion):
+        """Alias de compatibilidad para obtener()"""
+        return self.obtener(id_cotizacion)
+
     # ------------------------------------------------------------
     # Verificar integridad forense (recalcula hash y compara)
     # ------------------------------------------------------------
@@ -337,7 +338,7 @@ class CotizadorRepository(AUPRepository):
             id_cotizacion: ID de la cotización
         
         Returns:
-            Diccionario con resultado de verificación
+            bool: True si la integridad es válida
         
         Raises:
             ValueError: Si cotización no existe
@@ -350,20 +351,26 @@ class CotizadorRepository(AUPRepository):
             self.cerrar_conexion(con)
             raise ValueError("Cotización no encontrada.")
         
-        # Recalcular hash actual
-        data = dict(cot)
+        # Recalcular hash con los mismos campos que se usaron al crear
+        # IMPORTANTE: Convertir monto_total a int si no tiene decimales (compatibilidad tipo)
+        monto = cot["monto_total"]
+        if isinstance(monto, float) and monto == int(monto):
+            monto = int(monto)
+        
+        data = {
+            "id_oportunidad": cot["id_oportunidad"],
+            "modo": cot["modo"],
+            "fuente": cot["fuente"],
+            "monto_total": monto,
+            "estado": cot["estado"],
+            "fecha_emision": cot["fecha_emision"]
+        }
         raw = json.dumps(data, sort_keys=True, ensure_ascii=False)
         nuevo_hash = hashlib.sha256(raw.encode()).hexdigest()
         
         self.cerrar_conexion(con)
         
-        return {
-            "id_cotizacion": id_cotizacion,
-            "hash_original": cot["hash_integridad"],
-            "hash_actual": nuevo_hash,
-            "integridad_ok": cot["hash_integridad"] == nuevo_hash,
-            "mensaje": "✅ Integridad verificada" if cot["hash_integridad"] == nuevo_hash else "❌ ALERTA: Datos modificados"
-        }
+        return cot["hash_cotizacion"] == nuevo_hash
 
     # ------------------------------------------------------------
     # Estadísticas de cotizaciones

@@ -26,6 +26,7 @@ if str(CORE_DIR) not in sys.path:
 from repository_base import AUPRepository
 import sqlite3
 from datetime import datetime
+from typing import Optional, Dict
 
 class ProspectoRepository(AUPRepository):
     """
@@ -117,6 +118,37 @@ class ProspectoRepository(AUPRepository):
         
         self.cerrar_conexion(con)
         return id_prospecto
+
+    def crear_desde_empresa(self, id_empresa: int, origen: Optional[str] = None) -> int:
+        """
+        Wrapper de compatibilidad que crea prospecto desde empresa.
+        Busca el primer contacto de la empresa y llama a crear_prospecto().
+        """
+        con = self.conectar()
+        try:
+            cur = con.cursor()
+            
+            # Buscar primer contacto de la empresa
+            cur.execute("""
+                SELECT id_contacto FROM contactos 
+                WHERE id_empresa = ? 
+                ORDER BY id_contacto ASC 
+                LIMIT 1
+            """, (id_empresa,))
+            row = cur.fetchone()
+            
+            if not row:
+                raise ValueError(f"No hay contactos para la empresa {id_empresa}")
+            
+            id_contacto = row[0]
+            self.cerrar_conexion(con)
+            
+            # Llamar al método principal
+            return self.crear_prospecto(id_empresa, id_contacto, origen)
+            
+        except Exception as e:
+            self.cerrar_conexion(con)
+            raise
 
     # ------------------------------------------------------------
     # Consultas

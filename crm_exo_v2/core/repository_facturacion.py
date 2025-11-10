@@ -107,20 +107,20 @@ class OrdenCompraRepository(AUPRepository):
         data = {
             "id_oportunidad": id_oportunidad,
             "numero_oc": numero_oc,
-            "fecha_oc": datetime.utcnow().isoformat(),
+            "fecha_emision": datetime.utcnow().isoformat(),
             "monto_oc": monto_oc,
-            "moneda": moneda,
-            "archivo_pdf": archivo_pdf
+            "estado": "pendiente"
         }
 
         # 5️⃣ Generar hash de integridad forense
         raw = json.dumps(data, sort_keys=True, ensure_ascii=False)
         hash_integridad = hashlib.sha256(raw.encode()).hexdigest()
+        data["hash_oc"] = hash_integridad
 
-        # 6️⃣ Insertar OC (sin hash_integridad en tabla, solo en trazabilidad)
+        # 6️⃣ Insertar OC
         cur.execute("""
-            INSERT INTO ordenes_compra (id_oportunidad, numero_oc, fecha_oc, monto_oc, moneda, archivo_pdf)
-            VALUES (:id_oportunidad, :numero_oc, :fecha_oc, :monto_oc, :moneda, :archivo_pdf)
+            INSERT INTO ordenes_compra (id_oportunidad, numero_oc, fecha_emision, monto_oc, estado, hash_oc)
+            VALUES (:id_oportunidad, :numero_oc, :fecha_emision, :monto_oc, :estado, :hash_oc)
         """, data)
         con.commit()
         id_oc = cur.lastrowid
@@ -153,7 +153,7 @@ class OrdenCompraRepository(AUPRepository):
         cur.execute("""
             SELECT 
                 oc.*,
-                o.nombre AS oportunidad_nombre,
+                o.titulo AS oportunidad_nombre,
                 o.etapa AS oportunidad_etapa,
                 e.nombre AS empresa_nombre
             FROM ordenes_compra oc
@@ -169,6 +169,10 @@ class OrdenCompraRepository(AUPRepository):
             raise ValueError(f"Orden de Compra {id_oc} no existe.")
         
         return dict(row)
+
+    def obtener_por_id(self, id_oc):
+        """Alias de compatibilidad para obtener()"""
+        return self.obtener(id_oc)
 
     # ------------------------------------------------------------
     # Listar OCs
@@ -344,26 +348,33 @@ class FacturaRepository(AUPRepository):
             "folio": folio,
             "fecha_emision": fecha_emision,
             "monto_total": monto_total,
-            "moneda": moneda,
-            "archivo_xml": archivo_xml,
-            "archivo_pdf": archivo_pdf
+            "estado": "activa"
         }
 
         # 5️⃣ Generar hash de integridad documental
         raw = json.dumps(data, sort_keys=True, ensure_ascii=False)
         hash_integridad = hashlib.sha256(raw.encode()).hexdigest()
+        data["hash_factura"] = hash_integridad
 
         # 6️⃣ Insertar factura
         cur.execute("""
             INSERT INTO facturas (id_oc, uuid, serie, folio, fecha_emision,
-                                  monto_total, moneda, archivo_xml, archivo_pdf)
+                                  monto_total, estado, hash_factura)
             VALUES (:id_oc, :uuid, :serie, :folio, :fecha_emision,
-                    :monto_total, :moneda, :archivo_xml, :archivo_pdf)
+                    :monto_total, :estado, :hash_factura)
         """, data)
         con.commit()
         id_factura = cur.lastrowid
 
-        # 7️⃣ Registrar evento con hash
+        # 7️⃣ Actualizar estado de la OC a 'facturada'
+        cur.execute("""
+            UPDATE ordenes_compra 
+            SET estado = 'facturada' 
+            WHERE id_oc = ?
+        """, (id_oc,))
+        con.commit()
+
+        # 8️⃣ Registrar evento con hash
         data["hash_integridad"] = hash_integridad
         self.registrar_evento(con, id_factura, "CREAR_FACTURA", data)
         
@@ -433,7 +444,7 @@ class FacturaRepository(AUPRepository):
                 f.*,
                 oc.numero_oc,
                 oc.monto_oc,
-                o.nombre AS oportunidad_nombre,
+                o.titulo AS oportunidad_nombre,
                 e.nombre AS empresa_nombre,
                 e.rfc AS empresa_rfc
             FROM facturas f
@@ -450,6 +461,10 @@ class FacturaRepository(AUPRepository):
             raise ValueError(f"Factura {id_factura} no existe.")
         
         return dict(row)
+
+    def obtener_por_id(self, id_factura):
+        """Alias de compatibilidad para obtener()"""
+        return self.obtener(id_factura)
 
     # ------------------------------------------------------------
     # Listar facturas
