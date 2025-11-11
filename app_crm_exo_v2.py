@@ -26,7 +26,7 @@ sys.path.insert(0, str(BASE_DIR / "crm_exo_v2" / "ui"))
 # Importar módulos de facturación CFDI
 try:
     from ui_cfdi_emisor import ui_registro_emisor, widget_estado_cfdi
-    from facturacion.cfdi_emisor import validar_configuracion_cfdi
+    from facturacion.cfdi_emisor import validar_configuracion_cfdi, obtener_configuracion_emisor
     CFDI_DISPONIBLE = True
 except ImportError as e:
     CFDI_DISPONIBLE = False
@@ -330,6 +330,19 @@ with st.sidebar:
     )
     
     st.divider()
+    
+    # Mostrar estado CFDI en sidebar
+    if CFDI_DISPONIBLE:
+        try:
+            valido_cfdi, _ = validar_configuracion_cfdi()
+            if valido_cfdi:
+                config_emisor = obtener_configuracion_emisor()
+                st.success(f"🔐 CFDI: {config_emisor['rfc'][:6]}...")
+            else:
+                st.warning("⚠️ CFDI no configurado")
+        except Exception:
+            pass
+        st.divider()
     
     # Mostrar flujo estructural
     st.markdown("**Flujo Comercial:**")
@@ -863,6 +876,15 @@ elif menu == "💰 N3: Facturación":
     st.markdown('<div class="main-header">💰 Núcleo 3: Facturación</div>', unsafe_allow_html=True)
     st.markdown("**Flujo:** Oportunidad Ganada → OC → Factura CFDI")
     
+    # Widget de estado CFDI al inicio
+    if CFDI_DISPONIBLE:
+        try:
+            st.divider()
+            widget_estado_cfdi()
+            st.divider()
+        except Exception:
+            pass
+    
     tab1, tab2 = st.tabs(["🧾 Órdenes de Compra", "📄 Facturas"])
     
     # TAB: Órdenes de Compra
@@ -935,6 +957,28 @@ elif menu == "💰 N3: Facturación":
     with tab2:
         st.subheader("Gestión de Facturas CFDI")
         
+        # Validar configuración CFDI antes de permitir facturar
+        if CFDI_DISPONIBLE:
+            valido_cfdi, mensaje_cfdi = validar_configuracion_cfdi()
+            
+            if not valido_cfdi:
+                st.warning(f"⚠️ {mensaje_cfdi}")
+                st.info("""
+                **Para timbrar facturas CFDI necesitas:**
+                1. Configurar tu emisor en **⚙️ Configuración CFDI**
+                2. Registrar certificados CSD del SAT
+                3. Configurar token de TimbrarCFDI33.mx
+                
+                👉 Ve al menú **⚙️ Configuración CFDI** para completar el registro.
+                """)
+                
+                if st.button("⚙️ Ir a Configuración CFDI"):
+                    st.session_state.menu_redirect = "⚙️ Configuración CFDI"
+                    st.rerun()
+                
+                st.divider()
+                st.caption("💡 Mientras tanto, puedes registrar facturas manualmente ingresando el UUID.")
+        
         col1, col2 = st.columns([1, 1])
         
         with col1:
@@ -950,7 +994,18 @@ elif menu == "💰 N3: Facturación":
             if len(ocs_sin_factura) == 0:
                 st.warning("⚠️ No hay OCs pendientes de facturar")
             else:
+                # Mostrar opción de timbrado automático si CFDI está configurado
+                if CFDI_DISPONIBLE:
+                    valido_cfdi, _ = validar_configuracion_cfdi()
+                    if valido_cfdi:
+                        st.success("✅ Emisor CFDI configurado - Timbrado disponible")
+                        st.info("🚧 **Próximamente:** Timbrado automático CFDI 4.0")
+                        st.caption("Por ahora, registra facturas manualmente con el UUID del PAC")
+                
                 with st.form("form_factura"):
+                    st.markdown("### 📝 Registro Manual de Factura")
+                    st.caption("Ingresa los datos de la factura ya timbrada en tu PAC")
+                    
                     oc_display = [f"OC #{row['id_oc']} - {row['numero_oc']} (${row['monto']} {row['moneda']})" 
                                  for _, row in ocs_sin_factura.iterrows()]
                     oc_sel = st.selectbox("Orden de Compra *", oc_display)
