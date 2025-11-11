@@ -191,6 +191,33 @@ st.set_page_config(
 
 # Inicializar base de datos al arrancar la aplicación
 inicializar_db()
+# Aplicar migraciones pendientes en bases existentes (columnas nuevas, etc.)
+def aplicar_migraciones():
+    """Revisa y aplica pequeñas migraciones necesarias en bases existentes.
+    Mantener aquí los ALTER TABLE seguros que agregan columnas con DEFAULT.
+    """
+    con = sqlite3.connect(str(DB_PATH))
+    cur = con.cursor()
+
+    def _column_exists(table: str, column: str) -> bool:
+        cur.execute(f"PRAGMA table_info({table})")
+        rows = cur.fetchall()
+        cols = [r[1] for r in rows]
+        return column in cols
+
+    # Asegurar columna es_cliente en prospectos (agregada en versiones recientes)
+    try:
+        if not _column_exists('prospectos', 'es_cliente'):
+            cur.execute("ALTER TABLE prospectos ADD COLUMN es_cliente INTEGER DEFAULT 0")
+            con.commit()
+    except Exception:
+        # No hacemos fail-hard: registramos y seguimos (Streamlit ocultará detalles en producción)
+        import traceback, sys
+        traceback.print_exc(file=sys.stderr)
+    finally:
+        con.close()
+
+aplicar_migraciones()
 
 # CSS personalizado
 st.markdown("""
@@ -267,24 +294,32 @@ if menu == "🏠 Dashboard":
     
     con = conectar()
     
-    # Métricas principales
+    # Métricas principales con manejo de errores
     col1, col2, col3, col4 = st.columns(4)
     
-    with col1:
-        total_empresas = pd.read_sql("SELECT COUNT(*) as total FROM empresas", con).iloc[0]["total"]
-        st.metric("🏢 Empresas", total_empresas)
+    try:
+        with col1:
+            total_empresas = pd.read_sql("SELECT COUNT(*) as total FROM empresas", con).iloc[0]["total"]
+            st.metric("🏢 Empresas", total_empresas)
+        
+        with col2:
+            total_prospectos = pd.read_sql("SELECT COUNT(*) as total FROM prospectos WHERE es_cliente=0", con).iloc[0]["total"]
+            st.metric("📈 Prospectos", total_prospectos)
+        
+        with col3:
+            total_oportunidades = pd.read_sql("SELECT COUNT(*) as total FROM oportunidades WHERE etapa NOT IN ('Ganada','Perdida')", con).iloc[0]["total"]
+            st.metric("🎯 Oportunidades", total_oportunidades)
+        
+        with col4:
+            total_clientes = pd.read_sql("SELECT COUNT(*) as total FROM prospectos WHERE es_cliente=1", con).iloc[0]["total"]
+            st.metric("✅ Clientes", total_clientes)
     
-    with col2:
-        total_prospectos = pd.read_sql("SELECT COUNT(*) as total FROM prospectos WHERE es_cliente=0", con).iloc[0]["total"]
-        st.metric("📈 Prospectos", total_prospectos)
-    
-    with col3:
-        total_oportunidades = pd.read_sql("SELECT COUNT(*) as total FROM oportunidades WHERE etapa NOT IN ('Ganada','Perdida')", con).iloc[0]["total"]
-        st.metric("🎯 Oportunidades", total_oportunidades)
-    
-    with col4:
-        total_clientes = pd.read_sql("SELECT COUNT(*) as total FROM prospectos WHERE es_cliente=1", con).iloc[0]["total"]
-        st.metric("✅ Clientes", total_clientes)
+    except Exception as e:
+        st.error(f"❌ Error al cargar métricas del dashboard. Por favor contacta al administrador.")
+        # Log completo para debugging (se guarda en logs de Streamlit Cloud)
+        import traceback, sys
+        traceback.print_exc(file=sys.stderr)
+        st.stop()
     
     st.divider()
     
