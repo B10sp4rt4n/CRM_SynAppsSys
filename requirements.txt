@@ -4,3 +4,4 @@ plotly
 openpyxl
 pytest>=7.4.0
 pytest-cov>=4.1.0
+requests>=2.31.0

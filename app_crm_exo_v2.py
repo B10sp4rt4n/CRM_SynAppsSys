@@ -223,6 +223,38 @@ def aplicar_migraciones():
         if not _column_exists('oportunidades', 'fecha_estimada_cierre'):
             cur.execute("ALTER TABLE oportunidades ADD COLUMN fecha_estimada_cierre TEXT")
             con.commit()
+        
+        # ========== MIGRACIÓN: Tablas de Configuración CFDI (Nov 2025) ==========
+        # Crear tablas para configuración de facturación electrónica si no existen
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS config_cfdi_emisor (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rfc_emisor TEXT NOT NULL UNIQUE,
+                razon_social TEXT,
+                regimen_fiscal TEXT,
+                token_api TEXT NOT NULL,
+                modo TEXT NOT NULL CHECK(modo IN ('pruebas', 'produccion')),
+                fecha_registro TEXT NOT NULL,
+                fecha_actualizacion TEXT,
+                activo INTEGER DEFAULT 1
+            )
+        """)
+        
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS config_cfdi_certificados (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id_emisor INTEGER NOT NULL,
+                cer_base64 TEXT NOT NULL,
+                key_base64 TEXT NOT NULL,
+                numero_certificado TEXT,
+                fecha_inicio_vigencia TEXT,
+                fecha_fin_vigencia TEXT,
+                fecha_carga TEXT NOT NULL,
+                activo INTEGER DEFAULT 1,
+                FOREIGN KEY (id_emisor) REFERENCES config_cfdi_emisor(id)
+            )
+        """)
+        con.commit()
             
     except Exception:
         # No hacemos fail-hard: registramos y seguimos (Streamlit ocultará detalles en producción)
