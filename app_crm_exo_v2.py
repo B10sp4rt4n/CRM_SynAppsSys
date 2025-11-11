@@ -166,7 +166,7 @@ def conectar():
 
 def registrar_evento(con, entidad, id_entidad, accion, valor_nuevo, usuario="ui"):
     """Registra evento con hash forense"""
-    ts = datetime.utcnow().isoformat()
+    ts = datetime.now().isoformat()
     raw = f"{entidad}|{accion}|{valor_nuevo}|{ts}"
     h = hashlib.sha256(raw.encode()).hexdigest()
     con.execute("""
@@ -703,14 +703,25 @@ elif menu == "💼 N2: Transacción":
                 
                 with col_a2:
                     if st.button("📋 Marcar OC Recibida (REGLA R4)", use_container_width=True):
-                        con = conectar()
-                        cur = con.cursor()
-                        cur.execute("UPDATE oportunidades SET oc_recibida=1 WHERE id_oportunidad=?", (opor_sel_id,))
-                        con.commit()
-                        registrar_evento(con, "oportunidad", opor_sel_id, "OC_RECIBIDA", "OC marcada como recibida")
-                        st.success("✅ OC recibida marcada")
-                        st.rerun()
-                        con.close()
+                        try:
+                            con = conectar()
+                            cur = con.cursor()
+                            # Actualizar estado OC
+                            cur.execute("UPDATE oportunidades SET oc_recibida=1 WHERE id_oportunidad=?", (opor_sel_id,))
+                            con.commit()
+                            
+                            # Registrar evento en historial
+                            registrar_evento(con, "oportunidad", opor_sel_id, "OC_RECIBIDA", "OC marcada como recibida")
+                            
+                            st.success("✅ OC recibida marcada y evento registrado en historial")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error al marcar OC: {str(e)}")
+                            import traceback
+                            traceback.print_exc(file=sys.stderr)
+                        finally:
+                            if 'con' in locals():
+                                con.close()
             else:
                 st.info("No hay oportunidades registradas")
     
