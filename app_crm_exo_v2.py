@@ -210,6 +210,20 @@ def aplicar_migraciones():
         if not _column_exists('prospectos', 'es_cliente'):
             cur.execute("ALTER TABLE prospectos ADD COLUMN es_cliente INTEGER DEFAULT 0")
             con.commit()
+        
+        if not _column_exists('prospectos', 'fecha_conversion_cliente'):
+            cur.execute("ALTER TABLE prospectos ADD COLUMN fecha_conversion_cliente TEXT")
+            con.commit()
+        
+        # Asegurar columna oc_recibida en oportunidades
+        if not _column_exists('oportunidades', 'oc_recibida'):
+            cur.execute("ALTER TABLE oportunidades ADD COLUMN oc_recibida INTEGER DEFAULT 0")
+            con.commit()
+        
+        if not _column_exists('oportunidades', 'fecha_estimada_cierre'):
+            cur.execute("ALTER TABLE oportunidades ADD COLUMN fecha_estimada_cierre TEXT")
+            con.commit()
+            
     except Exception:
         # No hacemos fail-hard: registramos y seguimos (Streamlit ocultará detalles en producción)
         import traceback, sys
