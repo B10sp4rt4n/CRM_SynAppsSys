@@ -239,8 +239,8 @@ def widget_estado_cfdi():
         st.success(f"✅ CFDI configurado: **{config['rfc']}** ({config['modo']})")
     else:
         st.warning(f"⚠️ {mensaje}")
-        if st.button("⚙️ Configurar ahora"):
-            st.session_state.seccion_activa = "configuracion_cfdi"
+        if st.button("⚙️ Configurar ahora", key="btn_config_cfdi_widget"):
+            st.session_state.menu_seleccionado = "⚙️ Configuración CFDI"
             st.rerun()
 
 

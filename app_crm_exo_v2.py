@@ -316,6 +316,10 @@ with st.sidebar:
     st.markdown("**Arquitectura AUP de 4 núcleos**")
     st.divider()
     
+    # Inicializar menu en session_state si no existe
+    if 'menu_seleccionado' not in st.session_state:
+        st.session_state.menu_seleccionado = "🏠 Dashboard"
+    
     menu = st.radio(
         "Navegación:",
         [
@@ -326,7 +330,8 @@ with st.sidebar:
             "🪶 N4: Trazabilidad",
             "📊 Pipeline Visual",
             "⚙️ Configuración CFDI"
-        ]
+        ],
+        key='menu_seleccionado'
     )
     
     st.divider()
@@ -972,8 +977,8 @@ elif menu == "💰 N3: Facturación":
                 👉 Ve al menú **⚙️ Configuración CFDI** para completar el registro.
                 """)
                 
-                if st.button("⚙️ Ir a Configuración CFDI"):
-                    st.session_state.menu_redirect = "⚙️ Configuración CFDI"
+                if st.button("⚙️ Ir a Configuración CFDI", type="primary"):
+                    st.session_state.menu_seleccionado = "⚙️ Configuración CFDI"
                     st.rerun()
                 
                 st.divider()
