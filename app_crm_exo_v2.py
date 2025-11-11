@@ -13,10 +13,24 @@ from datetime import datetime, date
 import pandas as pd
 from pathlib import Path
 from decimal import Decimal
+import sys
 
 # Ruta relativa desde raíz del proyecto
 BASE_DIR = Path(__file__).parent
 DB_PATH = BASE_DIR / "crm_exo_v2" / "data" / "crm_exo_v2.sqlite"
+
+# Agregar rutas para imports de módulos internos
+sys.path.insert(0, str(BASE_DIR / "crm_exo_v2" / "core"))
+sys.path.insert(0, str(BASE_DIR / "crm_exo_v2" / "ui"))
+
+# Importar módulos de facturación CFDI
+try:
+    from ui_cfdi_emisor import ui_registro_emisor, widget_estado_cfdi
+    from facturacion.cfdi_emisor import validar_configuracion_cfdi
+    CFDI_DISPONIBLE = True
+except ImportError as e:
+    CFDI_DISPONIBLE = False
+    print(f"⚠️ Módulo CFDI no disponible: {e}")
 
 
 # ================================================================
@@ -310,7 +324,8 @@ with st.sidebar:
             "💼 N2: Transacción",
             "💰 N3: Facturación",
             "🪶 N4: Trazabilidad",
-            "📊 Pipeline Visual"
+            "📊 Pipeline Visual",
+            "⚙️ Configuración CFDI"
         ]
     )
     
@@ -368,6 +383,14 @@ if menu == "🏠 Dashboard":
         st.stop()
     
     st.divider()
+    
+    # Widget de estado CFDI
+    if CFDI_DISPONIBLE:
+        try:
+            widget_estado_cfdi()
+            st.divider()
+        except Exception:
+            pass  # Si falla el widget, no romper el dashboard
     
     # Pipeline por etapa
     st.subheader("📊 Pipeline de Oportunidades")
@@ -1190,6 +1213,54 @@ elif menu == "📊 Pipeline Visual":
             st.caption(f"Conversión: {(total_cli/max(total_opor,1)*100):.1f}%")
     
     con.close()
+
+
+# ================================================================
+#  CONFIGURACIÓN CFDI
+# ================================================================
+
+elif menu == "⚙️ Configuración CFDI":
+    if CFDI_DISPONIBLE:
+        # Mostrar interfaz completa de configuración CFDI
+        ui_registro_emisor()
+        
+        # Widget de estado al final
+        st.divider()
+        st.subheader("📊 Estado de Configuración")
+        
+        valido, mensaje = validar_configuracion_cfdi()
+        
+        if valido:
+            st.success(f"✅ {mensaje}")
+            st.info("""
+            **Siguiente paso:** 
+            - Ir a la sección **💰 N3: Facturación** para timbrar facturas
+            - Verifica que el emisor coincida con tus datos fiscales
+            - Revisa la vigencia de tus certificados CSD
+            """)
+        else:
+            st.warning(f"⚠️ {mensaje}")
+            st.info("""
+            **Completa la configuración:**
+            1. Registra tu cuenta en https://timbracfdi33.mx
+            2. Obtén tu token de API (pruebas o producción)
+            3. Descarga tus certificados CSD del portal del SAT
+            4. Completa el formulario arriba
+            """)
+    else:
+        st.error("❌ Módulo CFDI no disponible")
+        st.warning("""
+        **El módulo de facturación CFDI no se pudo cargar.**
+        
+        Posibles causas:
+        - Archivos faltantes en `crm_exo_v2/core/facturacion/`
+        - Archivos faltantes en `crm_exo_v2/ui/`
+        - Dependencias no instaladas (`pip install requests`)
+        
+        Verifica que existan:
+        - `crm_exo_v2/core/facturacion/cfdi_emisor.py`
+        - `crm_exo_v2/ui/ui_cfdi_emisor.py`
+        """)
 
 
 # ================================================================
