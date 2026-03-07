@@ -8,6 +8,11 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
+try:
+    from .db_runtime import get_sqlite_db_path
+except ImportError:
+    from db_runtime import get_sqlite_db_path
+
 
 class DatabaseV2:
     """
@@ -34,7 +39,7 @@ class DatabaseV2:
     
     def _connect(self):
         """Establece conexión con la base de datos"""
-        db_path = Path(__file__).parent.parent / "data" / "crm_exo_v2.sqlite"
+        db_path = get_sqlite_db_path(Path(__file__).resolve().parents[2])
         
         self._connection = sqlite3.connect(
             str(db_path),

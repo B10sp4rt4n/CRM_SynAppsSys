@@ -21,13 +21,18 @@ from datetime import datetime, UTC
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 
+try:
+    from .db_runtime import get_sqlite_db_path
+except ImportError:
+    from db_runtime import get_sqlite_db_path
+
 
 # ================================================================
 #  CONFIGURACIÓN GLOBAL
 # ================================================================
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = BASE_DIR / "data" / "crm_exo_v2.sqlite"
+DB_PATH = get_sqlite_db_path(BASE_DIR.parent)
 
 
 # ================================================================
@@ -109,7 +114,7 @@ class AUPRepository:
         En testing, la conexión se maneja externamente y no debe cerrarse.
         """
         if not (hasattr(self, '_external_conn') and self._external_conn):
-            self.cerrar_conexion(con)
+            con.close()
 
     # ------------------------------------------------------------
     # Hash estructurado (SHA-256 JSON)

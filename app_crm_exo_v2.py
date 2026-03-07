@@ -17,11 +17,14 @@ import sys
 
 # Ruta relativa desde raíz del proyecto
 BASE_DIR = Path(__file__).parent
-DB_PATH = BASE_DIR / "crm_exo_v2" / "data" / "crm_exo_v2.sqlite"
 
 # Agregar rutas para imports de módulos internos
 sys.path.insert(0, str(BASE_DIR / "crm_exo_v2" / "core"))
 sys.path.insert(0, str(BASE_DIR / "crm_exo_v2" / "ui"))
+
+from db_runtime import get_legacy_app_backend, get_legacy_app_backend_status, get_sqlite_db_path
+
+DB_PATH = get_sqlite_db_path(BASE_DIR)
 
 # Importar módulos de facturación CFDI
 try:
@@ -33,12 +36,309 @@ except ImportError as e:
     print(f"⚠️ Módulo CFDI no disponible: {e}")
 
 
+APP_DB_BACKEND = get_legacy_app_backend()
+APP_DB_BACKEND_STATUS = get_legacy_app_backend_status()
+
+# Futuro helper interno entre etapas:
+# - Deterministico y auditable, sin depender de LLM.
+# - Debe evaluar completitud, tiempo transcurrido y bloqueos por etapa.
+# - Debe emitir siguiente paso recomendado, riesgo y accion sugerida.
+# - La fuente base deben ser estados, timestamps y validaciones del flujo.
+ROI_BASELINE_HOURS = {
+    "Prospecto a oportunidad": 48.0,
+    "Oportunidad a OC": 120.0,
+    "OC a factura": 24.0,
+    "Prospecto a cliente": 168.0,
+}
+
+
+def obtener_metricas_helper(con):
+    metricas = {}
+    metricas["empresas_sin_contacto"] = int(pd.read_sql("""
+        SELECT COUNT(*) AS total
+        FROM empresas e
+        LEFT JOIN contactos c ON c.id_empresa = e.id_empresa
+        WHERE c.id_contacto IS NULL
+    """, con).iloc[0]["total"])
+    metricas["prospectos_sin_oportunidad"] = int(pd.read_sql("""
+        SELECT COUNT(*) AS total
+        FROM prospectos p
+        LEFT JOIN oportunidades o ON o.id_prospecto = p.id_prospecto
+        WHERE p.es_cliente = 0 AND o.id_oportunidad IS NULL
+    """, con).iloc[0]["total"])
+    metricas["oportunidades_sin_cotizacion"] = int(pd.read_sql("""
+        SELECT COUNT(*) AS total
+        FROM oportunidades o
+        LEFT JOIN cotizaciones c ON c.id_oportunidad = o.id_oportunidad
+        WHERE o.etapa NOT IN ('Ganada', 'Perdida') AND c.id_cotizacion IS NULL
+    """, con).iloc[0]["total"])
+    metricas["ganadas_sin_oc"] = int(pd.read_sql("""
+        SELECT COUNT(*) AS total
+        FROM oportunidades o
+        LEFT JOIN ordenes_compra oc ON oc.id_oportunidad = o.id_oportunidad
+        WHERE o.etapa = 'Ganada' AND o.oc_recibida = 1 AND oc.id_oc IS NULL
+    """, con).iloc[0]["total"])
+    metricas["ocs_sin_factura"] = int(pd.read_sql("""
+        SELECT COUNT(*) AS total
+        FROM ordenes_compra oc
+        LEFT JOIN facturas f ON f.id_oc = oc.id_oc
+        WHERE f.id_factura IS NULL
+    """, con).iloc[0]["total"])
+    metricas["oportunidades_estancadas"] = int(pd.read_sql("""
+        SELECT COUNT(*) AS total
+        FROM oportunidades o
+        WHERE o.etapa NOT IN ('Ganada', 'Perdida')
+          AND julianday('now') - julianday(o.fecha_creacion) >= 14
+    """, con).iloc[0]["total"])
+    return metricas
+
+
+def construir_recomendaciones_helper(metricas, cfdi_valido):
+    recomendaciones = []
+
+    if metricas["empresas_sin_contacto"] > 0:
+        recomendaciones.append({
+            "prioridad": "Alta",
+            "mensaje": f"Hay {metricas['empresas_sin_contacto']} empresa(s) sin contacto. Sin contacto no deberian entrar al flujo comercial.",
+            "riesgo": "Bloqueo en identidad",
+            "menu": "🏗️ N1: Identidad",
+            "accion": "Completar contactos",
+        })
+
+    if metricas["prospectos_sin_oportunidad"] > 0:
+        recomendaciones.append({
+            "prioridad": "Alta",
+            "mensaje": f"Hay {metricas['prospectos_sin_oportunidad']} prospecto(s) sin oportunidad. El pipeline se queda sin siguiente paso comercial.",
+            "riesgo": "Estancamiento comercial",
+            "menu": "💼 N2: Transacción",
+            "accion": "Abrir oportunidades",
+        })
+
+    if metricas["oportunidades_sin_cotizacion"] > 0:
+        recomendaciones.append({
+            "prioridad": "Media",
+            "mensaje": f"Hay {metricas['oportunidades_sin_cotizacion']} oportunidad(es) activas sin cotización.",
+            "riesgo": "Baja trazabilidad de propuesta",
+            "menu": "💼 N2: Transacción",
+            "accion": "Generar cotizaciones",
+        })
+
+    if metricas["ganadas_sin_oc"] > 0:
+        recomendaciones.append({
+            "prioridad": "Alta",
+            "mensaje": f"Hay {metricas['ganadas_sin_oc']} oportunidad(es) ganadas con OC marcada pero sin registro de orden de compra.",
+            "riesgo": "No se puede facturar",
+            "menu": "💰 N3: Facturación",
+            "accion": "Registrar OCs",
+        })
+
+    if metricas["ocs_sin_factura"] > 0:
+        recomendaciones.append({
+            "prioridad": "Alta",
+            "mensaje": f"Hay {metricas['ocs_sin_factura']} OC(s) sin factura. Existe valor cerrado sin salida fiscal completa.",
+            "riesgo": "Retraso de ingreso y trazabilidad",
+            "menu": "💰 N3: Facturación",
+            "accion": "Emitir o registrar facturas",
+        })
+
+    if metricas["oportunidades_estancadas"] > 0:
+        recomendaciones.append({
+            "prioridad": "Media",
+            "mensaje": f"Hay {metricas['oportunidades_estancadas']} oportunidad(es) activas con 14 o más días sin cierre.",
+            "riesgo": "Desgaste comercial",
+            "menu": "💼 N2: Transacción",
+            "accion": "Revisar estancamiento",
+        })
+
+    if CFDI_DISPONIBLE and not cfdi_valido:
+        recomendaciones.append({
+            "prioridad": "Alta",
+            "mensaje": "La configuración CFDI no está completa. Aunque el flujo comercial avance, la facturación queda limitada.",
+            "riesgo": "Bloqueo fiscal",
+            "menu": "⚙️ Configuración CFDI",
+            "accion": "Configurar CFDI",
+        })
+
+    if not recomendaciones:
+        recomendaciones.append({
+            "prioridad": "OK",
+            "mensaje": "El flujo no muestra bloqueos estructurales inmediatos. El siguiente paso es sostener velocidad y trazabilidad.",
+            "riesgo": "Operación sana",
+            "menu": "📊 Pipeline Visual",
+            "accion": "Monitorear",
+        })
+
+    return recomendaciones
+
+
+def obtener_scores_oportunidad(con):
+    oportunidades = pd.read_sql("""
+        SELECT
+            o.id_oportunidad,
+            e.nombre AS empresa,
+            o.nombre AS oportunidad,
+            o.etapa,
+            o.probabilidad,
+            ROUND(COALESCE(o.monto_estimado, 0), 2) AS monto_estimado,
+            COALESCE(o.oc_recibida, 0) AS oc_recibida,
+            ROUND(julianday('now') - julianday(o.fecha_creacion), 1) AS dias_abierta,
+            COUNT(DISTINCT c.id_cotizacion) AS cotizaciones,
+            COUNT(DISTINCT oc.id_oc) AS ocs,
+            COUNT(DISTINCT f.id_factura) AS facturas
+        FROM oportunidades o
+        JOIN prospectos p ON p.id_prospecto = o.id_prospecto
+        JOIN empresas e ON e.id_empresa = p.id_empresa
+        LEFT JOIN cotizaciones c ON c.id_oportunidad = o.id_oportunidad
+        LEFT JOIN ordenes_compra oc ON oc.id_oportunidad = o.id_oportunidad
+        LEFT JOIN facturas f ON f.id_oc = oc.id_oc
+        GROUP BY o.id_oportunidad, e.nombre, o.nombre, o.etapa, o.probabilidad, o.monto_estimado, o.oc_recibida, o.fecha_creacion
+        ORDER BY o.fecha_creacion DESC
+    """, con)
+
+    if len(oportunidades) == 0:
+        return oportunidades
+
+    def evaluar(row):
+        score = 100
+        hallazgos = []
+        menu = "💼 N2: Transacción"
+        accion = "Revisar oportunidad"
+
+        if row["cotizaciones"] == 0 and row["etapa"] not in ("Ganada", "Perdida"):
+            score -= 25
+            hallazgos.append("sin cotización")
+            accion = "Generar cotización"
+
+        if row["probabilidad"] >= 70 and row["cotizaciones"] == 0 and row["etapa"] not in ("Ganada", "Perdida"):
+            score -= 10
+            hallazgos.append("alta probabilidad sin propuesta formal")
+
+        if row["dias_abierta"] >= 14 and row["etapa"] not in ("Ganada", "Perdida"):
+            score -= 20
+            hallazgos.append("estancada")
+            accion = "Revisar seguimiento"
+
+        if row["etapa"] == "Ganada" and row["oc_recibida"] == 0:
+            score -= 25
+            hallazgos.append("ganada sin OC recibida")
+            accion = "Marcar OC recibida"
+
+        if row["etapa"] == "Ganada" and row["oc_recibida"] == 1 and row["ocs"] == 0:
+            score -= 35
+            hallazgos.append("sin OC registrada")
+            menu = "💰 N3: Facturación"
+            accion = "Registrar OC"
+
+        if row["ocs"] > 0 and row["facturas"] == 0:
+            score -= 25
+            hallazgos.append("sin factura")
+            menu = "💰 N3: Facturación"
+            accion = "Registrar factura"
+
+        if row["facturas"] > 0:
+            score = min(100, score + 5)
+            hallazgos.append("salida fiscal completada")
+            menu = "💰 N3: Facturación"
+            accion = "Monitorear cierre"
+
+        score = max(score, 0)
+
+        if score >= 85:
+            salud = "Sana"
+            prioridad = "Baja"
+        elif score >= 60:
+            salud = "Atencion"
+            prioridad = "Media"
+        else:
+            salud = "Critica"
+            prioridad = "Alta"
+
+        return pd.Series({
+            "score_flujo": score,
+            "salud_flujo": salud,
+            "prioridad": prioridad,
+            "hallazgos": ", ".join(hallazgos) if hallazgos else "sin bloqueos relevantes",
+            "accion_sugerida": accion,
+            "menu_sugerido": menu,
+        })
+
+    evaluacion = oportunidades.apply(evaluar, axis=1)
+    oportunidades = pd.concat([oportunidades, evaluacion], axis=1)
+    return oportunidades.sort_values(["score_flujo", "dias_abierta", "probabilidad"], ascending=[True, False, False])
+
+def enriquecer_scores_con_historial(con, score_df):
+    if len(score_df) == 0:
+        return score_df
+
+    historico = pd.read_sql("""
+        SELECT s.id_oportunidad, s.score_flujo AS score_anterior, s.fecha_snapshot
+        FROM pipeline_helper_oportunidad_snapshots s
+        INNER JOIN (
+            SELECT id_oportunidad, MAX(fecha_snapshot) AS fecha_snapshot
+            FROM pipeline_helper_oportunidad_snapshots
+            WHERE fecha_snapshot < date('now')
+            GROUP BY id_oportunidad
+        ) prev
+            ON prev.id_oportunidad = s.id_oportunidad
+           AND prev.fecha_snapshot = s.fecha_snapshot
+    """, con)
+
+    if len(historico) == 0:
+        score_df["score_anterior"] = None
+        score_df["delta_score"] = None
+        return score_df
+
+    score_df = score_df.merge(historico[["id_oportunidad", "score_anterior"]], on="id_oportunidad", how="left")
+    score_df["delta_score"] = score_df["score_flujo"] - score_df["score_anterior"]
+    return score_df
+
+
+def persistir_scores_oportunidad(con, score_df):
+    if len(score_df) == 0:
+        return
+
+    snapshot_date = date.today().isoformat()
+    payload = [
+        (
+            int(row["id_oportunidad"]),
+            snapshot_date,
+            int(row["score_flujo"]),
+            str(row["salud_flujo"]),
+            str(row["prioridad"]),
+            str(row["accion_sugerida"]),
+            str(row["hallazgos"]),
+        )
+        for _, row in score_df.iterrows()
+    ]
+
+    con.executemany(
+        """
+        INSERT INTO pipeline_helper_oportunidad_snapshots (
+            id_oportunidad, fecha_snapshot, score_flujo, salud_flujo,
+            prioridad, accion_sugerida, hallazgos
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id_oportunidad, fecha_snapshot) DO UPDATE SET
+            score_flujo = excluded.score_flujo,
+            salud_flujo = excluded.salud_flujo,
+            prioridad = excluded.prioridad,
+            accion_sugerida = excluded.accion_sugerida,
+            hallazgos = excluded.hallazgos,
+            actualizado_en = CURRENT_TIMESTAMP
+        """,
+        payload,
+    )
+    con.commit()
+
+
 # ================================================================
 #  INICIALIZACIÓN Y CONEXIÓN
 # ================================================================
 
 def inicializar_db():
     """Crea la base de datos si no existe"""
+    if APP_DB_BACKEND != "sqlite":
+        return
+
     if DB_PATH.exists():
         return
     
@@ -156,6 +456,21 @@ def inicializar_db():
         timestamp TEXT DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS pipeline_helper_oportunidad_snapshots (
+        id_snapshot INTEGER PRIMARY KEY AUTOINCREMENT,
+        id_oportunidad INTEGER NOT NULL,
+        fecha_snapshot TEXT NOT NULL,
+        score_flujo INTEGER NOT NULL,
+        salud_flujo TEXT NOT NULL,
+        prioridad TEXT NOT NULL,
+        accion_sugerida TEXT,
+        hallazgos TEXT,
+        creado_en TEXT DEFAULT CURRENT_TIMESTAMP,
+        actualizado_en TEXT,
+        UNIQUE(id_oportunidad, fecha_snapshot),
+        FOREIGN KEY (id_oportunidad) REFERENCES oportunidades(id_oportunidad)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_contactos_empresa ON contactos(id_empresa);
     CREATE INDEX IF NOT EXISTS idx_prospectos_empresa ON prospectos(id_empresa);
     CREATE INDEX IF NOT EXISTS idx_oportunidades_prospecto ON oportunidades(id_prospecto);
@@ -164,6 +479,7 @@ def inicializar_db():
     CREATE INDEX IF NOT EXISTS idx_facturas_oc ON facturas(id_oc);
     CREATE INDEX IF NOT EXISTS idx_historial_entidad ON historial_general(entidad, id_entidad);
     CREATE INDEX IF NOT EXISTS idx_hash_origen ON hash_registros(tabla_origen, id_registro);
+    CREATE INDEX IF NOT EXISTS idx_helper_snapshot_oportunidad ON pipeline_helper_oportunidad_snapshots(id_oportunidad, fecha_snapshot);
     """)
     
     con.commit()
@@ -171,6 +487,12 @@ def inicializar_db():
 
 
 def conectar():
+    if APP_DB_BACKEND != "sqlite":
+        raise RuntimeError(
+            "La app actual solo puede usar PostgreSQL cuando exista el esquema legado. "
+            "Hoy se debe ejecutar en SQLite hasta completar la migracion de app/repositorios."
+        )
+
     inicializar_db()
     con = sqlite3.connect(str(DB_PATH))
     con.row_factory = sqlite3.Row
@@ -210,6 +532,9 @@ def aplicar_migraciones():
     """Revisa y aplica pequeñas migraciones necesarias en bases existentes.
     Mantener aquí los ALTER TABLE seguros que agregan columnas con DEFAULT.
     """
+    if APP_DB_BACKEND != "sqlite":
+        return
+
     con = sqlite3.connect(str(DB_PATH))
     cur = con.cursor()
 
@@ -268,6 +593,23 @@ def aplicar_migraciones():
                 FOREIGN KEY (id_emisor) REFERENCES config_cfdi_emisor(id)
             )
         """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS pipeline_helper_oportunidad_snapshots (
+                id_snapshot INTEGER PRIMARY KEY AUTOINCREMENT,
+                id_oportunidad INTEGER NOT NULL,
+                fecha_snapshot TEXT NOT NULL,
+                score_flujo INTEGER NOT NULL,
+                salud_flujo TEXT NOT NULL,
+                prioridad TEXT NOT NULL,
+                accion_sugerida TEXT,
+                hallazgos TEXT,
+                creado_en TEXT DEFAULT CURRENT_TIMESTAMP,
+                actualizado_en TEXT,
+                UNIQUE(id_oportunidad, fecha_snapshot)
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_helper_snapshot_oportunidad ON pipeline_helper_oportunidad_snapshots(id_oportunidad, fecha_snapshot)")
         con.commit()
             
     except Exception:
@@ -314,8 +656,18 @@ st.markdown("""
 with st.sidebar:
     st.markdown("### 🚀 CRM-EXO v2")
     st.markdown("**Arquitectura AUP de 4 núcleos**")
+    if APP_DB_BACKEND == "sqlite":
+        if APP_DB_BACKEND_STATUS == "postgres-configured-schema-incompatible":
+            st.caption("DB runtime: SQLite (DATABASE_URL detectado, esquema legado no compatible)")
+        else:
+            st.caption("DB runtime: SQLite")
+    else:
+        st.caption("DB runtime: PostgreSQL")
     st.divider()
     
+    if 'menu_redireccion_pendiente' in st.session_state:
+        st.session_state.menu_seleccionado = st.session_state.pop('menu_redireccion_pendiente')
+
     # Inicializar menu en session_state si no existe
     if 'menu_seleccionado' not in st.session_state:
         st.session_state.menu_seleccionado = "🏠 Dashboard"
@@ -438,7 +790,7 @@ if menu == "🏠 Dashboard":
         with col_pipe1:
             st.dataframe(
                 pipeline,
-                use_container_width=True,
+                width="stretch",
                 column_config={
                     "etapa": "Etapa",
                     "cantidad": st.column_config.NumberColumn("Cantidad", format="%d"),
@@ -473,7 +825,7 @@ if menu == "🏠 Dashboard":
         """, con)
         
         if len(prospectos_recientes) > 0:
-            st.dataframe(prospectos_recientes, use_container_width=True, hide_index=True)
+            st.dataframe(prospectos_recientes, width="stretch", hide_index=True)
         else:
             st.info("No hay prospectos registrados")
     
@@ -489,7 +841,7 @@ if menu == "🏠 Dashboard":
         """, con)
         
         if len(opor_activas) > 0:
-            st.dataframe(opor_activas, use_container_width=True, hide_index=True)
+            st.dataframe(opor_activas, width="stretch", hide_index=True)
         else:
             st.info("No hay oportunidades activas")
     
@@ -549,7 +901,7 @@ elif menu == "🏗️ N1: Identidad":
             con.close()
             
             if len(empresas) > 0:
-                st.dataframe(empresas, use_container_width=True, hide_index=True)
+                st.dataframe(empresas, width="stretch", hide_index=True)
             else:
                 st.info("No hay empresas registradas")
     
@@ -599,7 +951,7 @@ elif menu == "🏗️ N1: Identidad":
                 con.close()
                 
                 if len(contactos) > 0:
-                    st.dataframe(contactos, use_container_width=True, hide_index=True)
+                    st.dataframe(contactos, width="stretch", hide_index=True)
                 else:
                     st.info("No hay contactos registrados")
     
@@ -668,7 +1020,7 @@ elif menu == "🏗️ N1: Identidad":
                 con.close()
                 
                 if len(prospectos) > 0:
-                    st.dataframe(prospectos, use_container_width=True, hide_index=True)
+                    st.dataframe(prospectos, width="stretch", hide_index=True)
                 else:
                     st.info("No hay prospectos activos")
 
@@ -746,7 +1098,7 @@ elif menu == "💼 N2: Transacción":
             con.close()
             
             if len(oportunidades) > 0:
-                st.dataframe(oportunidades, use_container_width=True, hide_index=True)
+                st.dataframe(oportunidades, width="stretch", hide_index=True)
                 
                 # Acciones sobre oportunidades
                 st.divider()
@@ -757,7 +1109,7 @@ elif menu == "💼 N2: Transacción":
                 col_a1, col_a2 = st.columns(2)
                 
                 with col_a1:
-                    if st.button("🎉 Marcar como Ganada (REGLA R3)", use_container_width=True):
+                    if st.button("🎉 Marcar como Ganada (REGLA R3)", width="stretch"):
                         con = conectar()
                         cur = con.cursor()
                         # Actualizar oportunidad
@@ -775,7 +1127,7 @@ elif menu == "💼 N2: Transacción":
                         con.close()
                 
                 with col_a2:
-                    if st.button("📋 Marcar OC Recibida (REGLA R4)", use_container_width=True):
+                    if st.button("📋 Marcar OC Recibida (REGLA R4)", width="stretch"):
                         try:
                             con = conectar()
                             cur = con.cursor()
@@ -868,7 +1220,7 @@ elif menu == "💼 N2: Transacción":
             con.close()
             
             if len(cotizaciones) > 0:
-                st.dataframe(cotizaciones, use_container_width=True, hide_index=True)
+                st.dataframe(cotizaciones, width="stretch", hide_index=True)
             else:
                 st.info("No hay cotizaciones registradas")
 
@@ -954,7 +1306,7 @@ elif menu == "💰 N3: Facturación":
             con.close()
             
             if len(ocs) > 0:
-                st.dataframe(ocs, use_container_width=True, hide_index=True)
+                st.dataframe(ocs, width="stretch", hide_index=True)
             else:
                 st.info("No hay OCs registradas")
     
@@ -978,7 +1330,7 @@ elif menu == "💰 N3: Facturación":
                 """)
                 
                 if st.button("⚙️ Ir a Configuración CFDI", type="primary"):
-                    st.session_state.menu_seleccionado = "⚙️ Configuración CFDI"
+                    st.session_state.menu_redireccion_pendiente = "⚙️ Configuración CFDI"
                     st.rerun()
                 
                 st.divider()
@@ -1062,7 +1414,7 @@ elif menu == "💰 N3: Facturación":
             con.close()
             
             if len(facturas) > 0:
-                st.dataframe(facturas, use_container_width=True, hide_index=True)
+                st.dataframe(facturas, width="stretch", hide_index=True)
             else:
                 st.info("No hay facturas registradas")
 
@@ -1122,7 +1474,7 @@ elif menu == "🪶 N4: Trazabilidad":
             st.dataframe(
                 historial[['id_evento', 'entidad', 'id_entidad', 'accion', 'valor_nuevo', 
                           'usuario', 'timestamp', 'hash_corto']],
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
         else:
@@ -1148,7 +1500,7 @@ elif menu == "🪶 N4: Trazabilidad":
             con.close()
             
             if len(hashes_cot) > 0:
-                st.dataframe(hashes_cot, use_container_width=True, hide_index=True)
+                st.dataframe(hashes_cot, width="stretch", hide_index=True)
             else:
                 st.info("No hay hashes de cotizaciones")
         
@@ -1166,7 +1518,7 @@ elif menu == "🪶 N4: Trazabilidad":
             con.close()
             
             if len(hashes_fact) > 0:
-                st.dataframe(hashes_fact, use_container_width=True, hide_index=True)
+                st.dataframe(hashes_fact, width="stretch", hide_index=True)
             else:
                 st.info("No hay hashes de facturas")
         
@@ -1202,6 +1554,121 @@ elif menu == "📊 Pipeline Visual":
     st.markdown('<div class="main-header">📊 Pipeline Visual Completo</div>', unsafe_allow_html=True)
     
     con = conectar()
+
+    cfdi_valido = False
+    if CFDI_DISPONIBLE:
+        try:
+            cfdi_valido, _ = validar_configuracion_cfdi()
+        except Exception:
+            cfdi_valido = False
+
+    metricas_helper = obtener_metricas_helper(con)
+    recomendaciones_helper = construir_recomendaciones_helper(metricas_helper, cfdi_valido)
+    score_oportunidades = obtener_scores_oportunidad(con)
+    score_oportunidades = enriquecer_scores_con_historial(con, score_oportunidades)
+    persistir_scores_oportunidad(con, score_oportunidades)
+
+    st.subheader("🤖 Helper interno del flujo")
+    st.caption("Recomendaciones determinísticas calculadas con datos reales del pipeline, sin LLM.")
+
+    for index, recomendacion in enumerate(recomendaciones_helper[:4], start=1):
+        col_h1, col_h2, col_h3 = st.columns([5, 2, 2])
+        with col_h1:
+            if recomendacion["prioridad"] == "Alta":
+                st.warning(f"{recomendacion['prioridad']}: {recomendacion['mensaje']}")
+            elif recomendacion["prioridad"] == "Media":
+                st.info(f"{recomendacion['prioridad']}: {recomendacion['mensaje']}")
+            else:
+                st.success(recomendacion["mensaje"])
+            st.caption(f"Riesgo: {recomendacion['riesgo']}")
+        with col_h2:
+            st.metric(f"Acción {index}", recomendacion["accion"])
+        with col_h3:
+            if recomendacion["menu"] != "📊 Pipeline Visual":
+                if st.button(f"Ir ahora {index}", key=f"helper_ir_{index}"):
+                    st.session_state.menu_redireccion_pendiente = recomendacion["menu"]
+                    st.rerun()
+
+    st.divider()
+
+    st.subheader("🎯 Prioridad por oportunidad")
+    st.caption("Scoring interno por salud del flujo. Prioriza casos con mayor riesgo operativo y menor avance verificable.")
+
+    if len(score_oportunidades) > 0:
+        snapshots_info = pd.read_sql("""
+            SELECT COUNT(*) AS total_snapshots, MAX(fecha_snapshot) AS ultima_fecha
+            FROM pipeline_helper_oportunidad_snapshots
+        """, con).iloc[0]
+
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            st.metric("Snapshots helper", int(snapshots_info["total_snapshots"]))
+        with col_p2:
+            st.metric("Último snapshot", snapshots_info["ultima_fecha"] or "N/D")
+
+        st.dataframe(
+            score_oportunidades[[
+                "id_oportunidad", "empresa", "oportunidad", "etapa", "probabilidad",
+                "dias_abierta", "cotizaciones", "ocs", "facturas", "score_flujo",
+                "score_anterior", "delta_score", "salud_flujo", "prioridad", "hallazgos", "accion_sugerida"
+            ]],
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "id_oportunidad": st.column_config.NumberColumn("ID", format="%d"),
+                "empresa": "Empresa",
+                "oportunidad": "Oportunidad",
+                "etapa": "Etapa",
+                "probabilidad": st.column_config.NumberColumn("Prob. %", format="%d"),
+                "dias_abierta": st.column_config.NumberColumn("Días", format="%.1f"),
+                "cotizaciones": st.column_config.NumberColumn("Cot.", format="%d"),
+                "ocs": st.column_config.NumberColumn("OCs", format="%d"),
+                "facturas": st.column_config.NumberColumn("Fact.", format="%d"),
+                "score_flujo": st.column_config.NumberColumn("Score", format="%d"),
+                "score_anterior": st.column_config.NumberColumn("Score ant.", format="%d"),
+                "delta_score": st.column_config.NumberColumn("Delta", format="%d"),
+                "salud_flujo": "Salud",
+                "prioridad": "Prioridad",
+                "hallazgos": "Hallazgos",
+                "accion_sugerida": "Acción sugerida",
+            }
+        )
+
+        st.caption("Casos más urgentes")
+        for index, row in score_oportunidades.head(3).iterrows():
+            col_u1, col_u2, col_u3 = st.columns([5, 2, 2])
+            with col_u1:
+                if row["prioridad"] == "Alta":
+                    st.warning(f"{row['empresa']} | {row['oportunidad']} | {row['hallazgos']}")
+                elif row["prioridad"] == "Media":
+                    st.info(f"{row['empresa']} | {row['oportunidad']} | {row['hallazgos']}")
+                else:
+                    st.success(f"{row['empresa']} | {row['oportunidad']} | {row['hallazgos']}")
+            with col_u2:
+                st.metric(f"Score {int(row['id_oportunidad'])}", int(row["score_flujo"]))
+            with col_u3:
+                if st.button(f"Atender {int(row['id_oportunidad'])}", key=f"score_ir_{int(row['id_oportunidad'])}"):
+                    st.session_state.menu_redireccion_pendiente = row["menu_sugerido"]
+                    st.rerun()
+    else:
+        st.info("No hay oportunidades para calcular score de flujo.")
+
+    st.divider()
+
+    # Este bloque es el mejor punto para insertar un helper interno futuro,
+    # porque aqui ya convergen estados, conversiones y tiempos del recorrido.
+    st.subheader("🧭 Recorrido sugerido")
+    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+    with col_f1:
+        st.info("1. Empresa → Contacto")
+    with col_f2:
+        st.info("2. Prospecto → Oportunidad")
+    with col_f3:
+        st.info("3. Cotización → OC")
+    with col_f4:
+        st.info("4. Factura → Trazabilidad")
+    
+    st.divider()
     
     # Flujo completo desde empresas hasta facturas
     flujo_completo = pd.read_sql("""
@@ -1226,7 +1693,7 @@ elif menu == "📊 Pipeline Visual":
     if len(flujo_completo) > 0:
         st.dataframe(
             flujo_completo,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "empresa": "Empresa",
@@ -1271,6 +1738,99 @@ elif menu == "📊 Pipeline Visual":
         st.metric("✅ Clientes", total_cli)
         if total_opor > 0:
             st.caption(f"Conversión: {(total_cli/max(total_opor,1)*100):.1f}%")
+
+    st.divider()
+
+    st.subheader("⏱️ Ahorro operativo estimado")
+    st.caption("Se calcula con timestamps reales del sistema y una línea base explícita por tramo. Úsalo como indicador operativo, no como ROI financiero auditado.")
+
+    costo_hora = st.number_input(
+        "Costo hora de referencia (MXN)",
+        min_value=0.0,
+        value=350.0,
+        step=50.0,
+        help="Sirve para traducir el ahorro de tiempo estimado a valor operativo recuperable.",
+    )
+
+    tiempos_flujo = pd.read_sql("""
+        SELECT 'Prospecto a oportunidad' AS tramo,
+               COUNT(*) AS casos,
+               ROUND(AVG((julianday(o.fecha_creacion) - julianday(p.fecha_creacion)) * 24), 1) AS horas_reales
+        FROM oportunidades o
+        JOIN prospectos p ON p.id_prospecto = o.id_prospecto
+        WHERE p.fecha_creacion IS NOT NULL AND o.fecha_creacion IS NOT NULL
+
+        UNION ALL
+
+        SELECT 'Oportunidad a OC' AS tramo,
+               COUNT(*) AS casos,
+               ROUND(AVG((julianday(oc.fecha_oc) - julianday(o.fecha_creacion)) * 24), 1) AS horas_reales
+        FROM ordenes_compra oc
+        JOIN oportunidades o ON o.id_oportunidad = oc.id_oportunidad
+        WHERE oc.fecha_oc IS NOT NULL AND o.fecha_creacion IS NOT NULL
+
+        UNION ALL
+
+        SELECT 'OC a factura' AS tramo,
+               COUNT(*) AS casos,
+               ROUND(AVG((julianday(f.fecha_emision) - julianday(oc.fecha_oc)) * 24), 1) AS horas_reales
+        FROM facturas f
+        JOIN ordenes_compra oc ON oc.id_oc = f.id_oc
+        WHERE f.fecha_emision IS NOT NULL AND oc.fecha_oc IS NOT NULL
+
+        UNION ALL
+
+        SELECT 'Prospecto a cliente' AS tramo,
+               COUNT(*) AS casos,
+               ROUND(AVG((julianday(p.fecha_conversion_cliente) - julianday(p.fecha_creacion)) * 24), 1) AS horas_reales
+        FROM prospectos p
+        WHERE p.es_cliente = 1
+          AND p.fecha_conversion_cliente IS NOT NULL
+          AND p.fecha_creacion IS NOT NULL
+    """, con)
+
+    tiempos_flujo["horas_reales"] = pd.to_numeric(tiempos_flujo["horas_reales"], errors="coerce")
+    tiempos_flujo["baseline_horas"] = tiempos_flujo["tramo"].map(ROI_BASELINE_HOURS)
+    tiempos_flujo["ahorro_horas"] = (tiempos_flujo["baseline_horas"] - tiempos_flujo["horas_reales"]).clip(lower=0)
+    tiempos_flujo["ahorro_pct"] = ((tiempos_flujo["ahorro_horas"] / tiempos_flujo["baseline_horas"]) * 100).round(1)
+    tiempos_flujo["valor_mxn"] = (tiempos_flujo["ahorro_horas"] * costo_hora).round(2)
+
+    resumen_roi = tiempos_flujo.dropna(subset=["horas_reales"]).copy()
+
+    col_r1, col_r2, col_r3 = st.columns(3)
+    with col_r1:
+        ahorro_total = float(resumen_roi["ahorro_horas"].sum()) if len(resumen_roi) > 0 else 0.0
+        st.metric("Horas ahorradas estimadas", f"{ahorro_total:.1f} h")
+
+    with col_r2:
+        valor_total = float(resumen_roi["valor_mxn"].sum()) if len(resumen_roi) > 0 else 0.0
+        st.metric("Valor operativo estimado", f"${valor_total:,.0f}")
+
+    with col_r3:
+        tramos_medidos = int((resumen_roi["casos"] > 0).sum()) if len(resumen_roi) > 0 else 0
+        st.metric("Tramos medidos", tramos_medidos)
+
+    if len(resumen_roi) > 0:
+        st.dataframe(
+            resumen_roi[["tramo", "casos", "horas_reales", "baseline_horas", "ahorro_horas", "ahorro_pct", "valor_mxn"]],
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "tramo": "Tramo",
+                "casos": st.column_config.NumberColumn("Casos", format="%d"),
+                "horas_reales": st.column_config.NumberColumn("Horas reales", format="%.1f h"),
+                "baseline_horas": st.column_config.NumberColumn("Línea base", format="%.1f h"),
+                "ahorro_horas": st.column_config.NumberColumn("Ahorro estimado", format="%.1f h"),
+                "ahorro_pct": st.column_config.NumberColumn("Ahorro %", format="%.1f%%"),
+                "valor_mxn": st.column_config.NumberColumn("Valor estimado", format="$%.2f"),
+            }
+        )
+
+        chart_roi = resumen_roi.set_index("tramo")[["horas_reales", "baseline_horas"]]
+        st.caption("Comparativo entre tiempo real observado y línea base esperada por tramo")
+        st.bar_chart(chart_roi)
+    else:
+        st.info("Aún no hay suficientes timestamps para estimar ahorro operativo en el flujo.")
     
     con.close()
 
