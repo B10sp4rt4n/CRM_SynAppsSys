@@ -40,7 +40,7 @@ def main():
                     correo = st.text_input("Correo electrónico", value="admin@synappssys.com")
                     password = st.text_input("Contraseña", type="password")
                     password_confirm = st.text_input("Confirmar contraseña", type="password")
-                    submit = st.form_submit_button("🎯 Crear y Comenzar", use_container_width=True)
+                    submit = st.form_submit_button("🎯 Crear y Comenzar", width="stretch")
                 
                 if submit:
                     if password and password == password_confirm and len(password) >= 6:

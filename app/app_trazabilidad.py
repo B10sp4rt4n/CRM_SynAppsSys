@@ -143,7 +143,7 @@ with tab1:
             # Configurar columnas
             st.dataframe(
                 df_eventos,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "id_evento": st.column_config.NumberColumn("ID", width="small"),
@@ -204,7 +204,7 @@ with tab2:
             
             st.dataframe(
                 df_hashes,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "id_hash": st.column_config.NumberColumn("ID", width="small"),
@@ -263,7 +263,7 @@ with tab3:
     with col_c:
         st.write("")  # Espaciado
         st.write("")
-        verificar_btn = st.button("🔍 Verificar Integridad", type="primary", use_container_width=True)
+        verificar_btn = st.button("🔍 Verificar Integridad", type="primary", width="stretch")
     
     if verificar_btn:
         try:
@@ -451,7 +451,7 @@ with tab5:
                 list(stats_h['top_usuarios'].items()),
                 columns=['Usuario', 'Eventos']
             ).sort_values('Eventos', ascending=False)
-            st.dataframe(df_usuarios, use_container_width=True, hide_index=True)
+            st.dataframe(df_usuarios, width="stretch", hide_index=True)
         else:
             st.info("Sin datos de usuarios")
         
@@ -463,7 +463,7 @@ with tab5:
                 list(stats_hash['por_tabla'].items()),
                 columns=['Tabla', 'Hashes']
             ).sort_values('Hashes', ascending=False)
-            st.dataframe(df_tabla, use_container_width=True, hide_index=True)
+            st.dataframe(df_tabla, width="stretch", hide_index=True)
         else:
             st.info("Sin datos de hashes")
     

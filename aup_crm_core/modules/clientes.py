@@ -172,23 +172,23 @@ def mostrar_tarjeta_cliente(c):
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            if st.button("📈 Ver oportunidades", key=f"ver_op_cli_{c['id']}", use_container_width=True):
+            if st.button("📈 Ver oportunidades", key=f"ver_op_cli_{c['id']}", width="stretch"):
                 # Redirigir al módulo de oportunidades con este prospecto
                 st.session_state["prospecto_id_oportunidad"] = c["id"]
                 st.session_state["prospecto_nombre_oportunidad"] = c["nombre"]
                 st.switch_page("pages/oportunidades.py") if hasattr(st, 'switch_page') else st.info("Ir a módulo Oportunidades")
         
         with col2:
-            if st.button("👤 Ver contactos", key=f"ver_cont_cli_{c['id']}", use_container_width=True):
+            if st.button("👤 Ver contactos", key=f"ver_cont_cli_{c['id']}", width="stretch"):
                 ver_contactos_cliente(c["id"], c["nombre"])
         
         with col3:
             if c["activo"]:
-                if st.button("❌ Desactivar", key=f"deact_cli_{c['id']}", use_container_width=True):
+                if st.button("❌ Desactivar", key=f"deact_cli_{c['id']}", width="stretch"):
                     desactivar_cliente(c["id"], c["nombre"])
                     st.rerun()
             else:
-                if st.button("✅ Activar", key=f"act_cli_{c['id']}", use_container_width=True):
+                if st.button("✅ Activar", key=f"act_cli_{c['id']}", width="stretch"):
                     activar_cliente(c["id"], c["nombre"])
                     st.rerun()
 
@@ -322,12 +322,12 @@ def activar_cliente(cliente_id, nombre):
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            if st.button(f"✏️ Editar", key=f"edit_{c['id']}", use_container_width=True):
+            if st.button(f"✏️ Editar", key=f"edit_{c['id']}", width="stretch"):
                 st.session_state["editar_cliente"] = c["id"]
                 st.rerun()
         
         with col2:
-            if st.button("📊 Ver oportunidades", key=f"ver_oportunidades_{c['id']}", use_container_width=True):
+            if st.button("📊 Ver oportunidades", key=f"ver_oportunidades_{c['id']}", width="stretch"):
                 # Navegar al módulo de Oportunidades con cliente preseleccionado
                 st.session_state["cliente_seleccionado"] = c["id"]
                 st.session_state["cliente_nombre"] = c["nombre"]
@@ -336,7 +336,7 @@ def activar_cliente(cliente_id, nombre):
         
         with col3:
             texto_btn = "❌ Desactivar" if c["activo"] else "✅ Activar"
-            if st.button(texto_btn, key=f"toggle_{c['id']}", type="secondary", use_container_width=True):
+            if st.button(texto_btn, key=f"toggle_{c['id']}", type="secondary", width="stretch"):
                 toggle_activo(c["id"], c["nombre"], c["activo"])
                 st.rerun()
     
@@ -405,9 +405,9 @@ def editar_cliente(cliente_id):
         
         col1, col2 = st.columns(2)
         with col1:
-            submit = st.form_submit_button("💾 Guardar cambios", use_container_width=True)
+            submit = st.form_submit_button("💾 Guardar cambios", width="stretch")
         with col2:
-            cancel = st.form_submit_button("❌ Cancelar", use_container_width=True)
+            cancel = st.form_submit_button("❌ Cancelar", width="stretch")
     
     if cancel:
         del st.session_state["editar_cliente"]

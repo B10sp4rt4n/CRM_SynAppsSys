@@ -243,7 +243,7 @@ def show():
                 hole=0.3
             )
             fig_pie.update_traces(textposition='inside', textinfo='percent+label')
-            st.plotly_chart(fig_pie, use_container_width=True)
+            st.plotly_chart(fig_pie, width="stretch")
         
         with col_right:
             st.markdown("**📊 Barras: Valor $ por Estado**")
@@ -260,7 +260,7 @@ def show():
             )
             fig_bar_estado.update_traces(texttemplate='$%{text:,.0f}', textposition='outside')
             fig_bar_estado.update_layout(showlegend=False, yaxis_title="Monto ($)")
-            st.plotly_chart(fig_bar_estado, use_container_width=True)
+            st.plotly_chart(fig_bar_estado, width="stretch")
     
     # TAB 2: Rendimiento por responsable
     with tab2:
@@ -286,13 +286,13 @@ def show():
         )
         fig_resp.update_traces(texttemplate='$%{text:,.0f}', textposition='outside')
         fig_resp.update_layout(yaxis={'categoryorder': 'total ascending'})
-        st.plotly_chart(fig_resp, use_container_width=True)
+        st.plotly_chart(fig_resp, width="stretch")
         
         # Tabla detallada
         with st.expander("📋 Ver detalle por responsable"):
             df_resp["Monto Total"] = df_resp["Monto Total"].apply(lambda x: f"${x:,.2f}")
             df_resp["Prob. Promedio"] = df_resp["Prob. Promedio"].apply(lambda x: f"{x:.0f}%")
-            st.dataframe(df_resp, use_container_width=True, hide_index=True)
+            st.dataframe(df_resp, width="stretch", hide_index=True)
     
     # TAB 3: Análisis de probabilidad
     with tab3:
@@ -313,7 +313,7 @@ def show():
             )
             fig_prob.update_traces(texttemplate='%{text:.0f}%', textposition='outside')
             fig_prob.update_layout(showlegend=False, yaxis_title="Probabilidad (%)")
-            st.plotly_chart(fig_prob, use_container_width=True)
+            st.plotly_chart(fig_prob, width="stretch")
         
         with col_prob2:
             st.markdown("**💰 Valor Esperado (Monto × Probabilidad)**")
@@ -330,7 +330,7 @@ def show():
             top_val_esp["probabilidad"] = top_val_esp["probabilidad"].apply(lambda x: f"{x}%")
             
             st.caption("Top 5 por Valor Esperado")
-            st.dataframe(top_val_esp, use_container_width=True, hide_index=True)
+            st.dataframe(top_val_esp, width="stretch", hide_index=True)
     
     # TAB 4: Línea de tiempo
     with tab4:
@@ -371,14 +371,14 @@ def show():
                 yaxis_title="Monto ($)",
                 showlegend=True
             )
-            st.plotly_chart(fig_timeline, use_container_width=True)
+            st.plotly_chart(fig_timeline, width="stretch")
             
             # Tabla de oportunidades urgentes
             with st.expander("📋 Ver detalle de oportunidades próximas"):
                 df_timeline_display = df_timeline[["nombre", "cliente", "responsable", "monto", "probabilidad", "dias_hasta_cierre", "Alerta"]]
                 df_timeline_display["monto"] = df_timeline_display["monto"].apply(lambda x: f"${x:,.0f}")
                 df_timeline_display["probabilidad"] = df_timeline_display["probabilidad"].apply(lambda x: f"{x}%")
-                st.dataframe(df_timeline_display, use_container_width=True, hide_index=True)
+                st.dataframe(df_timeline_display, width="stretch", hide_index=True)
         else:
             st.info("✅ No hay oportunidades próximas a cerrar en los próximos 30 días")
     
@@ -441,7 +441,7 @@ def show():
         
         st.dataframe(
             df_display,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "nombre": st.column_config.TextColumn("Oportunidad", width="medium"),

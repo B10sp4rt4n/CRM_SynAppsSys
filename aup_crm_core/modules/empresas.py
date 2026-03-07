@@ -28,7 +28,7 @@ def show():
                 direccion = st.text_area("Dirección", placeholder="Calle, número, colonia, ciudad")
                 rfc = st.text_input("RFC", placeholder="Opcional")
             
-            submit = st.form_submit_button("💾 Guardar empresa", use_container_width=True)
+            submit = st.form_submit_button("💾 Guardar empresa", width="stretch")
             
             if submit and nombre:
                 conn = get_connection()
@@ -175,33 +175,33 @@ def mostrar_tarjeta_empresa(e):
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            if st.button("✏️ Editar", key=f"edit_emp_{e['id']}", use_container_width=True):
+            if st.button("✏️ Editar", key=f"edit_emp_{e['id']}", width="stretch"):
                 st.session_state["editar_empresa"] = e["id"]
                 st.rerun()
         
         with col2:
-            if st.button("👤 + Contacto", key=f"add_cont_{e['id']}", use_container_width=True):
+            if st.button("👤 + Contacto", key=f"add_cont_{e['id']}", width="stretch"):
                 st.session_state["agregar_contacto_empresa"] = e["id"]
                 st.rerun()
         
         with col3:
             # REGLA R1: Solo habilitar si tiene contactos y no tiene prospecto
             if tiene_contactos and not prospecto_id:
-                if st.button("🎯 Generar Prospecto", key=f"gen_pros_{e['id']}", use_container_width=True, type="primary"):
+                if st.button("🎯 Generar Prospecto", key=f"gen_pros_{e['id']}", width="stretch", type="primary"):
                     generar_prospecto(e["id"], e["nombre"])
                     st.rerun()
             elif not tiene_contactos:
-                st.button("🎯 Generar Prospecto", key=f"gen_pros_dis_{e['id']}", use_container_width=True, disabled=True, help="Requiere al menos 1 contacto")
+                st.button("🎯 Generar Prospecto", key=f"gen_pros_dis_{e['id']}", width="stretch", disabled=True, help="Requiere al menos 1 contacto")
             elif prospecto_id:
-                st.button("✅ Prospecto creado", key=f"gen_pros_ok_{e['id']}", use_container_width=True, disabled=True)
+                st.button("✅ Prospecto creado", key=f"gen_pros_ok_{e['id']}", width="stretch", disabled=True)
         
         with col4:
             if e["activo"]:
-                if st.button("❌ Desactivar", key=f"deact_emp_{e['id']}", use_container_width=True):
+                if st.button("❌ Desactivar", key=f"deact_emp_{e['id']}", width="stretch"):
                     desactivar_empresa(e["id"], e["nombre"])
                     st.rerun()
             else:
-                if st.button("✅ Activar", key=f"act_emp_{e['id']}", use_container_width=True):
+                if st.button("✅ Activar", key=f"act_emp_{e['id']}", width="stretch"):
                     activar_empresa(e["id"], e["nombre"])
                     st.rerun()
 
@@ -234,9 +234,9 @@ def agregar_contacto(empresa_id):
         
         col_submit, col_cancel = st.columns(2)
         with col_submit:
-            submit = st.form_submit_button("💾 Guardar contacto", use_container_width=True)
+            submit = st.form_submit_button("💾 Guardar contacto", width="stretch")
         with col_cancel:
-            cancel = st.form_submit_button("❌ Cancelar", use_container_width=True)
+            cancel = st.form_submit_button("❌ Cancelar", width="stretch")
         
         if cancel:
             del st.session_state["agregar_contacto_empresa"]
@@ -366,9 +366,9 @@ def editar_empresa(empresa_id):
         
         col_submit, col_cancel = st.columns(2)
         with col_submit:
-            submit = st.form_submit_button("💾 Guardar cambios", use_container_width=True)
+            submit = st.form_submit_button("💾 Guardar cambios", width="stretch")
         with col_cancel:
-            cancel = st.form_submit_button("❌ Cancelar", use_container_width=True)
+            cancel = st.form_submit_button("❌ Cancelar", width="stretch")
         
         if cancel:
             del st.session_state["editar_empresa"]

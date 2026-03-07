@@ -15,7 +15,7 @@ def show_login():
         with st.form("login_form"):
             correo = st.text_input("📧 Correo electrónico", placeholder="usuario@ejemplo.com")
             password = st.text_input("🔑 Contraseña", type="password", placeholder="••••••••")
-            submit = st.form_submit_button("Iniciar Sesión", use_container_width=True)
+            submit = st.form_submit_button("Iniciar Sesión", width="stretch")
         
         if submit:
             if correo and password:

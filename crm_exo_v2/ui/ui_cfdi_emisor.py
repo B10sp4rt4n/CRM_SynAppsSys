@@ -131,7 +131,7 @@ def ui_registro_emisor():
         with col_submit:
             submitted = st.form_submit_button(
                 "🚀 Registrar Emisor en PAC",
-                use_container_width=True,
+                width="stretch",
                 type="primary"
             )
         

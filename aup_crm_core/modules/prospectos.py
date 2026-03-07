@@ -29,7 +29,7 @@ def show():
                 estado = st.selectbox("Estado inicial", ["Nuevo", "En negociación", "Cerrado", "Perdido"])
                 vigencia_dias = st.number_input("Vigencia (días)", min_value=1, value=90)
             
-            submit = st.form_submit_button("💾 Guardar prospecto", use_container_width=True)
+            submit = st.form_submit_button("💾 Guardar prospecto", width="stretch")
             
             if submit and nombre:
                 conn = get_connection()
@@ -190,24 +190,24 @@ def mostrar_tarjeta_prospecto(p):
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            if st.button(f"✏️ Editar", key=f"edit_{p['id']}", use_container_width=True):
+            if st.button(f"✏️ Editar", key=f"edit_{p['id']}", width="stretch"):
                 st.session_state["editar_prospecto"] = p["id"]
                 st.rerun()
         
         with col2:
-            if st.button(f"👤 Nuevo contacto", key=f"cont_{p['id']}", use_container_width=True):
+            if st.button(f"👤 Nuevo contacto", key=f"cont_{p['id']}", width="stretch"):
                 st.session_state["prospecto_seleccionado"] = p["id"]
                 st.session_state["prospecto_nombre"] = p["nombre"]
                 st.rerun()
         
         with col3:
-            if st.button(f"🔄 Convertir", key=f"conv_{p['id']}", use_container_width=True):
+            if st.button(f"🔄 Convertir", key=f"conv_{p['id']}", width="stretch"):
                 convertir_a_cliente(p["id"], p["nombre"], p["atributos"])
                 st.rerun()
         
         with col4:
             texto_btn = "❌ Desactivar" if p["activo"] else "✅ Activar"
-            if st.button(texto_btn, key=f"toggle_{p['id']}", type="secondary", use_container_width=True):
+            if st.button(texto_btn, key=f"toggle_{p['id']}", type="secondary", width="stretch"):
                 toggle_activo(p["id"], p["nombre"], p["activo"])
                 st.rerun()
 
@@ -251,9 +251,9 @@ def editar_prospecto(prospecto_id):
         
         col1, col2 = st.columns(2)
         with col1:
-            submit = st.form_submit_button("💾 Guardar cambios", use_container_width=True)
+            submit = st.form_submit_button("💾 Guardar cambios", width="stretch")
         with col2:
-            cancel = st.form_submit_button("❌ Cancelar", use_container_width=True)
+            cancel = st.form_submit_button("❌ Cancelar", width="stretch")
     
     if cancel:
         del st.session_state["editar_prospecto"]
@@ -295,9 +295,9 @@ def agregar_contacto(prospecto_id, prospecto_nombre):
         
         col1, col2 = st.columns(2)
         with col1:
-            submit = st.form_submit_button("💾 Guardar contacto", use_container_width=True)
+            submit = st.form_submit_button("💾 Guardar contacto", width="stretch")
         with col2:
-            cancel = st.form_submit_button("❌ Cancelar", use_container_width=True)
+            cancel = st.form_submit_button("❌ Cancelar", width="stretch")
     
     if cancel:
         if "prospecto_seleccionado" in st.session_state:

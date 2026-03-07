@@ -211,7 +211,7 @@ def visualizar_pipeline(prospecto_id):
                 yaxis={'categoryorder': 'array', 'categoryarray': orden_etapas}
             )
             
-            st.plotly_chart(fig_cantidad, use_container_width=True)
+            st.plotly_chart(fig_cantidad, width="stretch")
         
         with col2:
             # Gráfico de barras por monto
@@ -237,7 +237,7 @@ def visualizar_pipeline(prospecto_id):
                 yaxis={'categoryorder': 'array', 'categoryarray': orden_etapas}
             )
             
-            st.plotly_chart(fig_monto, use_container_width=True)
+            st.plotly_chart(fig_monto, width="stretch")
         
         # Métricas resumen
         col1, col2, col3, col4 = st.columns(4)
@@ -286,7 +286,7 @@ def visualizar_pipeline(prospecto_id):
                 legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
             )
             
-            st.plotly_chart(fig_pie_cantidad, use_container_width=True)
+            st.plotly_chart(fig_pie_cantidad, width="stretch")
         
         with col2:
             # Gráfico de pastel por monto
@@ -311,7 +311,7 @@ def visualizar_pipeline(prospecto_id):
                 legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
             )
             
-            st.plotly_chart(fig_pie_monto, use_container_width=True)
+            st.plotly_chart(fig_pie_monto, width="stretch")
         
         # Tabla resumen
         st.markdown("##### Resumen detallado")
@@ -474,26 +474,26 @@ def mostrar_tarjeta_oportunidad(o, prospecto_id, prospecto_nombre):
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            if st.button("✏️ Editar", key=f"edit_op_{o['id']}", use_container_width=True):
+            if st.button("✏️ Editar", key=f"edit_op_{o['id']}", width="stretch"):
                 st.session_state["editar_oportunidad"] = o["id"]
                 st.rerun()
         
         with col2:
             # REGLA R3: Al ganar → convertir prospecto a cliente
             if estado not in ["Ganada", "Perdida"]:
-                if st.button("🏆 Ganada", key=f"win_op_{o['id']}", use_container_width=True, type="primary"):
+                if st.button("🏆 Ganada", key=f"win_op_{o['id']}", width="stretch", type="primary"):
                     marcar_ganada_y_convertir(o["id"], prospecto_id, prospecto_nombre, o["nombre"])
                     st.rerun()
         
         with col3:
             if estado not in ["Ganada", "Perdida"]:
-                if st.button("❌ Perdida", key=f"lost_op_{o['id']}", use_container_width=True):
+                if st.button("❌ Perdida", key=f"lost_op_{o['id']}", width="stretch"):
                     actualizar_estado(o["id"], "Perdida", prospecto_id, prospecto_nombre, o["nombre"])
                     st.rerun()
         
         with col4:
             if estado in ["Ganada", "Perdida"]:
-                if st.button("🔄 Reabrir", key=f"reopen_op_{o['id']}", use_container_width=True):
+                if st.button("🔄 Reabrir", key=f"reopen_op_{o['id']}", width="stretch"):
                     actualizar_estado(o["id"], "Abierta", prospecto_id, prospecto_nombre, o["nombre"])
                     st.rerun()
         
@@ -513,11 +513,11 @@ def mostrar_tarjeta_oportunidad(o, prospecto_id, prospecto_nombre):
             
             with col_fac:
                 if oc_recibida:
-                    if st.button("📄 Enviar a Facturación", key=f"fact_{o['id']}", use_container_width=True, type="primary"):
+                    if st.button("📄 Enviar a Facturación", key=f"fact_{o['id']}", width="stretch", type="primary"):
                         st.success("✅ Funcionalidad de facturación pendiente de implementar")
                         # TODO: Integrar con módulo de facturación
                 else:
-                    st.button("📄 Facturación", key=f"fact_dis_{o['id']}", use_container_width=True, disabled=True, help="Requiere OC recibida")
+                    st.button("📄 Facturación", key=f"fact_dis_{o['id']}", width="stretch", disabled=True, help="Requiere OC recibida")
     
     # Modo edición modal
     if st.session_state.get("editar_oportunidad") == o["id"]:
@@ -573,7 +573,7 @@ def nueva_oportunidad(prospecto_id, prospecto_nombre):
             help="Contexto relevante para el equipo"
         )
         
-        submit = st.form_submit_button("💾 Guardar oportunidad", use_container_width=True)
+        submit = st.form_submit_button("💾 Guardar oportunidad", width="stretch")
     
     if submit:
         if not nombre:
@@ -709,9 +709,9 @@ def editar_oportunidad(o, prospecto_id, prospecto_nombre):
         
         col1, col2 = st.columns(2)
         with col1:
-            submit = st.form_submit_button("💾 Guardar cambios", use_container_width=True)
+            submit = st.form_submit_button("💾 Guardar cambios", width="stretch")
         with col2:
-            cancel = st.form_submit_button("❌ Cancelar", use_container_width=True)
+            cancel = st.form_submit_button("❌ Cancelar", width="stretch")
     
     if cancel:
         if "editar_oportunidad" in st.session_state:

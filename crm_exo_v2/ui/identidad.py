@@ -238,7 +238,7 @@ with tab1:
     """, con)
     
     if len(pros_recientes) > 0:
-        st.dataframe(pros_recientes, use_container_width=True)
+        st.dataframe(pros_recientes, width="stretch")
     else:
         st.info("No hay prospectos registrados aún.")
     
@@ -255,7 +255,7 @@ with tab1:
     """, con)
     
     if len(logs) > 0:
-        st.dataframe(logs, use_container_width=True)
+        st.dataframe(logs, width="stretch")
     else:
         st.info("No hay eventos registrados.")
     
@@ -282,7 +282,7 @@ with tab2:
                 sector = st.text_input("Sector", placeholder="Ej: Tecnología, Manufactura")
                 telefono = st.text_input("Teléfono", placeholder="Ej: +52 55 1234 5678")
                 correo = st.text_input("Correo", placeholder="Ej: contacto@empresa.com")
-                submitted_emp = st.form_submit_button("✅ Registrar empresa", use_container_width=True)
+                submitted_emp = st.form_submit_button("✅ Registrar empresa", width="stretch")
             
             if submitted_emp:
                 if not nombre:
@@ -330,7 +330,7 @@ with tab2:
                     sector_edit = st.text_input("Sector", value=empresa_data["sector"] or "")
                     telefono_edit = st.text_input("Teléfono", value=empresa_data["telefono"] or "")
                     correo_edit = st.text_input("Correo", value=empresa_data["correo"] or "")
-                    submitted_edit = st.form_submit_button("💾 Guardar cambios", use_container_width=True)
+                    submitted_edit = st.form_submit_button("💾 Guardar cambios", width="stretch")
                 
                 if submitted_edit:
                     if not nombre_edit:
@@ -381,7 +381,7 @@ with tab2:
         if len(empresas) > 0:
             st.dataframe(
                 empresas,
-                use_container_width=True,
+                width="stretch",
                 column_config={
                     "id_empresa": "ID",
                     "nombre": "Empresa",
@@ -422,7 +422,7 @@ with tab3:
                     correo_c = st.text_input("Correo *", placeholder="Ej: juan.perez@empresa.com")
                     telefono_c = st.text_input("Teléfono", placeholder="Ej: +52 55 9876 5432")
                     puesto_c = st.text_input("Puesto", placeholder="Ej: Director de Compras")
-                    submitted_con = st.form_submit_button("✅ Registrar contacto", use_container_width=True)
+                    submitted_con = st.form_submit_button("✅ Registrar contacto", width="stretch")
                 
                 if submitted_con:
                     if not nombre_c or not correo_c:
@@ -473,7 +473,7 @@ with tab3:
                         correo_edit = st.text_input("Correo *", value=contacto_data["correo"] or "")
                         telefono_edit = st.text_input("Teléfono", value=contacto_data["telefono"] or "")
                         puesto_edit = st.text_input("Puesto", value=contacto_data["puesto"] or "")
-                        submitted_edit_c = st.form_submit_button("💾 Guardar cambios", use_container_width=True)
+                        submitted_edit_c = st.form_submit_button("💾 Guardar cambios", width="stretch")
                     
                     if submitted_edit_c:
                         if not nombre_edit or not correo_edit:
@@ -509,7 +509,7 @@ with tab3:
             con.close()
             
             if len(contactos) > 0:
-                st.dataframe(contactos, use_container_width=True)
+                st.dataframe(contactos, width="stretch")
             else:
                 st.info("No hay contactos registrados. Crea el primero usando el formulario.")
 
@@ -570,7 +570,7 @@ with tab4:
                                           placeholder="Ej: Campaña Google Ads, Referencia, Evento",
                                           help="¿Cómo llegó este prospecto?")
                     
-                    submitted_pros = st.form_submit_button("✅ Generar prospecto", use_container_width=True)
+                    submitted_pros = st.form_submit_button("✅ Generar prospecto", width="stretch")
                     
                     if submitted_pros:
                         con = conectar()
@@ -608,7 +608,7 @@ with tab4:
             if len(prospectos) > 0:
                 st.dataframe(
                     prospectos,
-                    use_container_width=True,
+                    width="stretch",
                     column_config={
                         "id_prospecto": "ID",
                         "empresa": "Empresa",
