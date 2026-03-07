@@ -1781,7 +1781,8 @@ elif menu == "📊 Pipeline Visual":
                 st.success(recomendacion["mensaje"])
             st.caption(f"Riesgo: {recomendacion['riesgo']}")
         with col_h2:
-            st.metric(f"Acción {index}", recomendacion["accion"])
+            st.markdown(f"**Acción {index}**")
+            st.write(recomendacion["accion"])
         with col_h3:
             if recomendacion["menu"] != "📊 Pipeline Visual":
                 if st.button(f"Ir ahora {index}", key=f"helper_ir_{index}"):
