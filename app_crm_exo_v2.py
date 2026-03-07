@@ -15,6 +15,13 @@ from pathlib import Path
 from decimal import Decimal
 import sys
 
+try:
+    import altair as alt
+    ALTAIR_DISPONIBLE = True
+except ImportError:
+    alt = None
+    ALTAIR_DISPONIBLE = False
+
 # Ruta relativa desde raíz del proyecto
 BASE_DIR = Path(__file__).parent
 
@@ -50,6 +57,16 @@ ROI_BASELINE_HOURS = {
     "OC a factura": 24.0,
     "Prospecto a cliente": 168.0,
 }
+
+PIPELINE_ETAPA_ORDEN = [
+    "Calificación",
+    "Negociación",
+    "Propuesta",
+    "Cierre",
+    "Ganada",
+    "Perdida",
+    "Sin etapa",
+]
 
 
 def obtener_metricas_helper(con):
@@ -181,7 +198,7 @@ def obtener_scores_oportunidad(con):
             o.probabilidad,
             ROUND(COALESCE(o.monto_estimado, 0), 2) AS monto_estimado,
             COALESCE(o.oc_recibida, 0) AS oc_recibida,
-            ROUND(julianday('now') - julianday(o.fecha_creacion), 1) AS dias_abierta,
+            CAST(julianday('now') - julianday(o.fecha_creacion) AS INTEGER) AS dias_abierta,
             COUNT(DISTINCT c.id_cotizacion) AS cotizaciones,
             COUNT(DISTINCT oc.id_oc) AS ocs,
             COUNT(DISTINCT f.id_factura) AS facturas
@@ -328,6 +345,188 @@ def persistir_scores_oportunidad(con, score_df):
         payload,
     )
     con.commit()
+
+
+def preparar_visualizaciones_pipeline(score_df):
+    if len(score_df) == 0:
+        return score_df, pd.DataFrame(), pd.DataFrame()
+
+    visual_df = score_df.copy()
+    visual_df["etapa"] = visual_df["etapa"].fillna("Sin etapa")
+    visual_df["dias_abierta"] = pd.to_numeric(visual_df["dias_abierta"], errors="coerce").fillna(0).astype(int)
+    visual_df["probabilidad"] = pd.to_numeric(visual_df["probabilidad"], errors="coerce").fillna(0)
+    visual_df["score_flujo"] = pd.to_numeric(visual_df["score_flujo"], errors="coerce").fillna(0)
+    visual_df["delta_score"] = pd.to_numeric(visual_df.get("delta_score"), errors="coerce")
+    visual_df["prioridad_valor"] = visual_df["prioridad"].map({"Alta": 3, "Media": 2, "Baja": 1}).fillna(1)
+    visual_df["peso_operativo"] = (
+        (100 - visual_df["score_flujo"]).clip(lower=0)
+        + visual_df["dias_abierta"].clip(upper=120) * 0.55
+        + (100 - visual_df["probabilidad"]).clip(lower=0) * 0.15
+        + visual_df["prioridad_valor"] * 8
+    ).round(1)
+    visual_df["etiqueta_oportunidad"] = visual_df.apply(
+        lambda row: f"{row['empresa']} | {row['oportunidad']}",
+        axis=1,
+    )
+
+    heatmap_df = visual_df.groupby(["etapa", "prioridad"], as_index=False).agg(
+        oportunidades=("id_oportunidad", "count"),
+        peso_total=("peso_operativo", "sum"),
+        score_promedio=("score_flujo", "mean"),
+    )
+
+    top_riesgo_df = visual_df.sort_values(
+        ["peso_operativo", "score_flujo", "dias_abierta"],
+        ascending=[False, True, False],
+    ).head(10)
+
+    return visual_df, heatmap_df, top_riesgo_df
+
+
+def filtrar_pipeline_visual(score_df):
+    if len(score_df) == 0:
+        return score_df
+
+    st.markdown("#### 🎛️ Filtros visuales")
+    col_f1, col_f2, col_f3 = st.columns([2, 3, 4])
+
+    with col_f1:
+        alcance = st.radio(
+            "Alcance",
+            ["Activas", "Todas"],
+            horizontal=True,
+            key="pipeline_filtro_alcance",
+        )
+
+    opciones_prioridad = ["Alta", "Media", "Baja"]
+    with col_f2:
+        prioridades = st.multiselect(
+            "Prioridad",
+            options=opciones_prioridad,
+            default=opciones_prioridad,
+            key="pipeline_filtro_prioridad",
+        )
+
+    etapas_disponibles = [etapa for etapa in PIPELINE_ETAPA_ORDEN if etapa in score_df["etapa"].fillna("Sin etapa").unique()]
+    etapas_default = [etapa for etapa in etapas_disponibles if etapa not in ("Ganada", "Perdida")]
+    if not etapas_default:
+        etapas_default = etapas_disponibles
+
+    with col_f3:
+        etapas = st.multiselect(
+            "Etapa",
+            options=etapas_disponibles,
+            default=etapas_default if alcance == "Activas" else etapas_disponibles,
+            key=f"pipeline_filtro_etapa_{alcance.lower()}",
+        )
+
+    filtrado = score_df.copy()
+    filtrado["etapa"] = filtrado["etapa"].fillna("Sin etapa")
+
+    if alcance == "Activas":
+        filtrado = filtrado[~filtrado["etapa"].isin(["Ganada", "Perdida"])]
+
+    if prioridades:
+        filtrado = filtrado[filtrado["prioridad"].isin(prioridades)]
+
+    if etapas:
+        filtrado = filtrado[filtrado["etapa"].isin(etapas)]
+
+    st.caption(f"Mostrando {len(filtrado)} de {len(score_df)} oportunidades en la vista analítica.")
+    return filtrado
+
+
+def renderizar_vistas_graficas_pipeline(score_df):
+    if len(score_df) == 0:
+        return
+
+    visual_df, heatmap_df, top_riesgo_df = preparar_visualizaciones_pipeline(score_df)
+
+    st.markdown("#### 👁️ Vista gráfica del pipeline")
+    st.caption("Cambia de vista para detectar carga operativa, urgencia y zonas de fricción del pipeline.")
+
+    if not ALTAIR_DISPONIBLE:
+        st.info("Altair no está disponible en este entorno. Se mantiene la tabla operativa como respaldo.")
+        return
+
+    vista_grafica = st.radio(
+        "Visualización",
+        ["Mapa de calor", "Burbujas", "Ranking de riesgo"],
+        horizontal=True,
+        key="pipeline_visual_grafica",
+    )
+
+    if vista_grafica == "Mapa de calor":
+        heatmap_chart = alt.Chart(heatmap_df).mark_rect(cornerRadius=6).encode(
+            x=alt.X("prioridad:N", sort=["Alta", "Media", "Baja"], title="Prioridad"),
+            y=alt.Y("etapa:N", sort=PIPELINE_ETAPA_ORDEN, title="Etapa"),
+            color=alt.Color("peso_total:Q", title="Peso operativo", scale=alt.Scale(scheme="orangered")),
+            tooltip=[
+                alt.Tooltip("etapa:N", title="Etapa"),
+                alt.Tooltip("prioridad:N", title="Prioridad"),
+                alt.Tooltip("oportunidades:Q", title="Oportunidades"),
+                alt.Tooltip("peso_total:Q", title="Peso total", format=".1f"),
+                alt.Tooltip("score_promedio:Q", title="Score promedio", format=".1f"),
+            ],
+        )
+        heatmap_labels = alt.Chart(heatmap_df).mark_text(fontSize=14, fontWeight="bold").encode(
+            x=alt.X("prioridad:N", sort=["Alta", "Media", "Baja"]),
+            y=alt.Y("etapa:N", sort=PIPELINE_ETAPA_ORDEN),
+            text=alt.Text("oportunidades:Q"),
+            color=alt.value("white"),
+        )
+        st.altair_chart((heatmap_chart + heatmap_labels).properties(height=320), width="stretch")
+        st.caption("La intensidad sube cuando convergen score bajo, muchos días abierta y prioridad alta.")
+
+    elif vista_grafica == "Burbujas":
+        lineas_control = alt.Chart(pd.DataFrame({"y": [60, 85]})).mark_rule(color="#7f8c8d", strokeDash=[5, 5]).encode(
+            y="y:Q"
+        )
+        bubble_chart = alt.Chart(visual_df).mark_circle(opacity=0.82, stroke="white", strokeWidth=1).encode(
+            x=alt.X("dias_abierta:Q", title="Días abierta"),
+            y=alt.Y("score_flujo:Q", title="Score de flujo", scale=alt.Scale(domain=[0, 100])),
+            size=alt.Size("peso_operativo:Q", title="Peso operativo", scale=alt.Scale(range=[120, 1800])),
+            color=alt.Color(
+                "prioridad:N",
+                title="Prioridad",
+                scale=alt.Scale(domain=["Alta", "Media", "Baja"], range=["#d73027", "#fdae61", "#1a9850"]),
+            ),
+            tooltip=[
+                alt.Tooltip("empresa:N", title="Empresa"),
+                alt.Tooltip("oportunidad:N", title="Oportunidad"),
+                alt.Tooltip("etapa:N", title="Etapa"),
+                alt.Tooltip("prioridad:N", title="Prioridad"),
+                alt.Tooltip("score_flujo:Q", title="Score", format=".0f"),
+                alt.Tooltip("dias_abierta:Q", title="Días", format=".0f"),
+                alt.Tooltip("probabilidad:Q", title="Probabilidad", format=".0f"),
+                alt.Tooltip("peso_operativo:Q", title="Peso operativo", format=".1f"),
+            ],
+        )
+        st.altair_chart((bubble_chart + lineas_control).properties(height=380), width="stretch")
+        st.caption("Arriba a la izquierda: oportunidades más sanas. Abajo y con burbujas grandes: foco inmediato.")
+
+    else:
+        ranking_chart = alt.Chart(top_riesgo_df).mark_bar(cornerRadiusEnd=6).encode(
+            y=alt.Y("etiqueta_oportunidad:N", sort="-x", title=None),
+            x=alt.X("peso_operativo:Q", title="Peso operativo"),
+            color=alt.Color(
+                "prioridad:N",
+                scale=alt.Scale(domain=["Alta", "Media", "Baja"], range=["#d73027", "#fdae61", "#1a9850"]),
+                legend=None,
+            ),
+            tooltip=[
+                alt.Tooltip("empresa:N", title="Empresa"),
+                alt.Tooltip("oportunidad:N", title="Oportunidad"),
+                alt.Tooltip("etapa:N", title="Etapa"),
+                alt.Tooltip("prioridad:N", title="Prioridad"),
+                alt.Tooltip("score_flujo:Q", title="Score", format=".0f"),
+                alt.Tooltip("dias_abierta:Q", title="Días", format=".0f"),
+                alt.Tooltip("delta_score:Q", title="Delta", format=".0f"),
+                alt.Tooltip("peso_operativo:Q", title="Peso operativo", format=".1f"),
+            ],
+        )
+        st.altair_chart(ranking_chart.properties(height=360), width="stretch")
+        st.caption("Ranking directo para decidir qué atender primero sin revisar toda la tabla.")
 
 
 # ================================================================
@@ -1606,8 +1805,15 @@ elif menu == "📊 Pipeline Visual":
         with col_p2:
             st.metric("Último snapshot", snapshots_info["ultima_fecha"] or "N/D")
 
-        st.dataframe(
-            score_oportunidades[[
+        score_oportunidades_filtradas = filtrar_pipeline_visual(score_oportunidades)
+
+        if len(score_oportunidades_filtradas) == 0:
+            st.info("Los filtros actuales dejan la vista sin oportunidades. Ajusta prioridad o etapa para continuar.")
+        else:
+            renderizar_vistas_graficas_pipeline(score_oportunidades_filtradas)
+
+            st.dataframe(
+            score_oportunidades_filtradas[[
                 "id_oportunidad", "empresa", "oportunidad", "etapa", "probabilidad",
                 "dias_abierta", "cotizaciones", "ocs", "facturas", "score_flujo",
                 "score_anterior", "delta_score", "salud_flujo", "prioridad", "hallazgos", "accion_sugerida"
@@ -1620,7 +1826,7 @@ elif menu == "📊 Pipeline Visual":
                 "oportunidad": "Oportunidad",
                 "etapa": "Etapa",
                 "probabilidad": st.column_config.NumberColumn("Prob. %", format="%d"),
-                "dias_abierta": st.column_config.NumberColumn("Días", format="%.1f"),
+                "dias_abierta": st.column_config.NumberColumn("Días", format="%d"),
                 "cotizaciones": st.column_config.NumberColumn("Cot.", format="%d"),
                 "ocs": st.column_config.NumberColumn("OCs", format="%d"),
                 "facturas": st.column_config.NumberColumn("Fact.", format="%d"),
@@ -1634,22 +1840,22 @@ elif menu == "📊 Pipeline Visual":
             }
         )
 
-        st.caption("Casos más urgentes")
-        for index, row in score_oportunidades.head(3).iterrows():
-            col_u1, col_u2, col_u3 = st.columns([5, 2, 2])
-            with col_u1:
-                if row["prioridad"] == "Alta":
-                    st.warning(f"{row['empresa']} | {row['oportunidad']} | {row['hallazgos']}")
-                elif row["prioridad"] == "Media":
-                    st.info(f"{row['empresa']} | {row['oportunidad']} | {row['hallazgos']}")
-                else:
-                    st.success(f"{row['empresa']} | {row['oportunidad']} | {row['hallazgos']}")
-            with col_u2:
-                st.metric(f"Score {int(row['id_oportunidad'])}", int(row["score_flujo"]))
-            with col_u3:
-                if st.button(f"Atender {int(row['id_oportunidad'])}", key=f"score_ir_{int(row['id_oportunidad'])}"):
-                    st.session_state.menu_redireccion_pendiente = row["menu_sugerido"]
-                    st.rerun()
+            st.caption("Casos más urgentes")
+            for index, row in score_oportunidades_filtradas.head(3).iterrows():
+                col_u1, col_u2, col_u3 = st.columns([5, 2, 2])
+                with col_u1:
+                    if row["prioridad"] == "Alta":
+                        st.warning(f"{row['empresa']} | {row['oportunidad']} | {row['hallazgos']}")
+                    elif row["prioridad"] == "Media":
+                        st.info(f"{row['empresa']} | {row['oportunidad']} | {row['hallazgos']}")
+                    else:
+                        st.success(f"{row['empresa']} | {row['oportunidad']} | {row['hallazgos']}")
+                with col_u2:
+                    st.metric(f"Score {int(row['id_oportunidad'])}", int(row["score_flujo"]))
+                with col_u3:
+                    if st.button(f"Atender {int(row['id_oportunidad'])}", key=f"score_ir_{int(row['id_oportunidad'])}"):
+                        st.session_state.menu_redireccion_pendiente = row["menu_sugerido"]
+                        st.rerun()
     else:
         st.info("No hay oportunidades para calcular score de flujo.")
 
