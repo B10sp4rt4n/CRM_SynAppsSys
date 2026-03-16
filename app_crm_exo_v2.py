@@ -713,6 +713,217 @@ def registrar_evento(con, entidad, id_entidad, accion, valor_nuevo, usuario="ui"
     return h
 
 
+def obtener_nodos_integracion_demo(con):
+    return pd.read_sql("""
+        SELECT
+            'empresa' AS nodo_tipo,
+            e.id_empresa AS nodo_id,
+            COALESCE(NULLIF(e.rfc, ''), 'EMP-' || e.id_empresa) AS clave_negocio,
+            e.nombre AS titulo,
+            COALESCE(e.sector, 'Sin sector') AS subtitulo,
+            'registrada' AS estado,
+            NULL AS monto,
+            NULL AS moneda,
+            e.fecha_alta AS fecha_evento
+        FROM empresas e
+
+        UNION ALL
+
+        SELECT
+            'prospecto' AS nodo_tipo,
+            p.id_prospecto AS nodo_id,
+            'PROS-' || p.id_prospecto AS clave_negocio,
+            e.nombre AS titulo,
+            COALESCE(c.nombre, 'Sin contacto') AS subtitulo,
+            CASE WHEN p.es_cliente = 1 THEN 'convertido' ELSE COALESCE(p.estado, 'Activo') END AS estado,
+            NULL AS monto,
+            NULL AS moneda,
+            p.fecha_creacion AS fecha_evento
+        FROM prospectos p
+        JOIN empresas e ON e.id_empresa = p.id_empresa
+        LEFT JOIN contactos c ON c.id_contacto = p.id_contacto
+
+        UNION ALL
+
+        SELECT
+            'oportunidad' AS nodo_tipo,
+            o.id_oportunidad AS nodo_id,
+            'OP-' || o.id_oportunidad AS clave_negocio,
+            o.nombre AS titulo,
+            e.nombre AS subtitulo,
+            COALESCE(o.etapa, 'Sin etapa') AS estado,
+            o.monto_estimado AS monto,
+            'MXN' AS moneda,
+            o.fecha_creacion AS fecha_evento
+        FROM oportunidades o
+        JOIN prospectos p ON p.id_prospecto = o.id_prospecto
+        JOIN empresas e ON e.id_empresa = p.id_empresa
+
+        UNION ALL
+
+        SELECT
+            'cotizacion' AS nodo_tipo,
+            c.id_cotizacion AS nodo_id,
+            'COT-' || c.id_cotizacion AS clave_negocio,
+            'Cotización ' || c.id_cotizacion AS titulo,
+            o.nombre AS subtitulo,
+            COALESCE(c.estado, 'Borrador') AS estado,
+            c.monto_total AS monto,
+            c.moneda AS moneda,
+            c.fecha_creacion AS fecha_evento
+        FROM cotizaciones c
+        JOIN oportunidades o ON o.id_oportunidad = c.id_oportunidad
+
+        UNION ALL
+
+        SELECT
+            'orden_compra' AS nodo_tipo,
+            oc.id_oc AS nodo_id,
+            COALESCE(NULLIF(oc.numero_oc, ''), 'OC-' || oc.id_oc) AS clave_negocio,
+            COALESCE(NULLIF(oc.numero_oc, ''), 'OC-' || oc.id_oc) AS titulo,
+            o.nombre AS subtitulo,
+            CASE WHEN EXISTS (SELECT 1 FROM facturas f WHERE f.id_oc = oc.id_oc) THEN 'facturada' ELSE 'pendiente' END AS estado,
+            oc.monto_oc AS monto,
+            oc.moneda AS moneda,
+            oc.fecha_oc AS fecha_evento
+        FROM ordenes_compra oc
+        JOIN oportunidades o ON o.id_oportunidad = oc.id_oportunidad
+
+        UNION ALL
+
+        SELECT
+            'factura' AS nodo_tipo,
+            f.id_factura AS nodo_id,
+            COALESCE(NULLIF(f.uuid, ''), 'FACT-' || f.id_factura) AS clave_negocio,
+            COALESCE(NULLIF(TRIM(COALESCE(f.serie, '') || CASE WHEN COALESCE(f.folio, '') <> '' THEN '-' || f.folio ELSE '' END), ''), COALESCE(f.uuid, 'FACT-' || f.id_factura)) AS titulo,
+            COALESCE(NULLIF(oc.numero_oc, ''), 'OC-' || oc.id_oc) AS subtitulo,
+            'emitida' AS estado,
+            f.monto_total AS monto,
+            f.moneda AS moneda,
+            f.fecha_emision AS fecha_evento
+        FROM facturas f
+        JOIN ordenes_compra oc ON oc.id_oc = f.id_oc
+    """, con)
+
+
+def obtener_aristas_integracion_demo(con):
+    return pd.read_sql("""
+        SELECT
+            'empresa' AS nodo_origen_tipo,
+            p.id_empresa AS nodo_origen_id,
+            e.nombre AS origen_titulo,
+            'tiene_prospecto' AS tipo_relacion,
+            'prospecto' AS nodo_destino_tipo,
+            p.id_prospecto AS nodo_destino_id,
+            'PROS-' || p.id_prospecto AS destino_titulo
+        FROM prospectos p
+        JOIN empresas e ON e.id_empresa = p.id_empresa
+
+        UNION ALL
+
+        SELECT
+            'prospecto' AS nodo_origen_tipo,
+            o.id_prospecto AS nodo_origen_id,
+            'PROS-' || o.id_prospecto AS origen_titulo,
+            'evoluciona_a' AS tipo_relacion,
+            'oportunidad' AS nodo_destino_tipo,
+            o.id_oportunidad AS nodo_destino_id,
+            o.nombre AS destino_titulo
+        FROM oportunidades o
+
+        UNION ALL
+
+        SELECT
+            'oportunidad' AS nodo_origen_tipo,
+            c.id_oportunidad AS nodo_origen_id,
+            o.nombre AS origen_titulo,
+            'genera' AS tipo_relacion,
+            'cotizacion' AS nodo_destino_tipo,
+            c.id_cotizacion AS nodo_destino_id,
+            'Cotización ' || c.id_cotizacion AS destino_titulo
+        FROM cotizaciones c
+        JOIN oportunidades o ON o.id_oportunidad = c.id_oportunidad
+
+        UNION ALL
+
+        SELECT
+            'oportunidad' AS nodo_origen_tipo,
+            oc.id_oportunidad AS nodo_origen_id,
+            o.nombre AS origen_titulo,
+            'recibe_oc' AS tipo_relacion,
+            'orden_compra' AS nodo_destino_tipo,
+            oc.id_oc AS nodo_destino_id,
+            COALESCE(NULLIF(oc.numero_oc, ''), 'OC-' || oc.id_oc) AS destino_titulo
+        FROM ordenes_compra oc
+        JOIN oportunidades o ON o.id_oportunidad = oc.id_oportunidad
+
+        UNION ALL
+
+        SELECT
+            'orden_compra' AS nodo_origen_tipo,
+            f.id_oc AS nodo_origen_id,
+            COALESCE(NULLIF(oc.numero_oc, ''), 'OC-' || oc.id_oc) AS origen_titulo,
+            'sustenta_factura' AS tipo_relacion,
+            'factura' AS nodo_destino_tipo,
+            f.id_factura AS nodo_destino_id,
+            COALESCE(NULLIF(f.uuid, ''), 'FACT-' || f.id_factura) AS destino_titulo
+        FROM facturas f
+        JOIN ordenes_compra oc ON oc.id_oc = f.id_oc
+    """, con)
+
+
+def obtener_pipeline_integracion_demo(con):
+    return pd.read_sql("""
+        SELECT
+            COALESCE(o.etapa, 'Sin etapa') AS etapa,
+            COUNT(DISTINCT o.id_oportunidad) AS oportunidades_total,
+            ROUND(COALESCE(SUM(o.monto_estimado), 0), 2) AS monto_pipeline,
+            COUNT(DISTINCT c.id_cotizacion) AS cotizaciones_total,
+            COUNT(DISTINCT oc.id_oc) AS ordenes_compra_total,
+            COUNT(DISTINCT f.id_factura) AS facturas_total
+        FROM oportunidades o
+        LEFT JOIN cotizaciones c ON c.id_oportunidad = o.id_oportunidad
+        LEFT JOIN ordenes_compra oc ON oc.id_oportunidad = o.id_oportunidad
+        LEFT JOIN facturas f ON f.id_oc = oc.id_oc
+        GROUP BY COALESCE(o.etapa, 'Sin etapa')
+        ORDER BY CASE COALESCE(o.etapa, 'Sin etapa')
+            WHEN 'Calificación' THEN 1
+            WHEN 'Propuesta' THEN 2
+            WHEN 'Negociación' THEN 3
+            WHEN 'Cierre' THEN 4
+            WHEN 'Ganada' THEN 5
+            WHEN 'Perdida' THEN 6
+            ELSE 7
+        END
+    """, con)
+
+
+def obtener_cxc_integracion_demo(con):
+    return pd.read_sql("""
+        SELECT
+            f.id_factura,
+            COALESCE(NULLIF(f.uuid, ''), 'FACT-' || f.id_factura) AS uuid,
+            e.nombre AS cliente,
+            COALESCE(NULLIF(oc.numero_oc, ''), 'OC-' || oc.id_oc) AS numero_oc,
+            f.fecha_emision,
+            ROUND(COALESCE(f.monto_total, 0), 2) AS total_factura,
+            0.00 AS total_pagado,
+            ROUND(COALESCE(f.monto_total, 0), 2) AS saldo_pendiente,
+            CASE
+                WHEN julianday('now') - julianday(f.fecha_emision) > 60 THEN 'vencido_60+'
+                WHEN julianday('now') - julianday(f.fecha_emision) > 30 THEN 'vencido_30+'
+                ELSE 'sin_pagos_legacy'
+            END AS estado_cobranza,
+            CAST(julianday('now') - julianday(f.fecha_emision) AS INTEGER) AS antiguedad_dias
+        FROM facturas f
+        JOIN ordenes_compra oc ON oc.id_oc = f.id_oc
+        JOIN oportunidades o ON o.id_oportunidad = oc.id_oportunidad
+        JOIN prospectos p ON p.id_prospecto = o.id_prospecto
+        JOIN empresas e ON e.id_empresa = p.id_empresa
+        ORDER BY f.fecha_emision DESC, f.id_factura DESC
+    """, con)
+
+
 # ================================================================
 #  CONFIGURACIÓN DE LA APLICACIÓN
 # ================================================================
@@ -880,6 +1091,7 @@ with st.sidebar:
             "💰 N3: Facturación",
             "🪶 N4: Trazabilidad",
             "📊 Pipeline Visual",
+            "🧭 Demo Integración",
             "⚙️ Configuración CFDI"
         ],
         key='menu_seleccionado'
@@ -2039,6 +2251,145 @@ elif menu == "📊 Pipeline Visual":
     else:
         st.info("Aún no hay suficientes timestamps para estimar ahorro operativo en el flujo.")
     
+    con.close()
+
+
+# ================================================================
+#  DEMO INTEGRACIÓN
+# ================================================================
+
+elif menu == "🧭 Demo Integración":
+    st.markdown('<div class="main-header">🧭 Demo de Integración con Grafo</div>', unsafe_allow_html=True)
+    st.caption("Vista demo montada sobre el esquema legacy actual. Sirve para visualizar desde ya el contrato que después consumirá fradma_dashboard3.")
+
+    con = conectar()
+    nodos_demo = obtener_nodos_integracion_demo(con)
+    aristas_demo = obtener_aristas_integracion_demo(con)
+    pipeline_demo = obtener_pipeline_integracion_demo(con)
+    cxc_demo = obtener_cxc_integracion_demo(con)
+
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    with col_m1:
+        st.metric("Nodos", len(nodos_demo))
+    with col_m2:
+        st.metric("Aristas", len(aristas_demo))
+    with col_m3:
+        st.metric("Etapas pipeline", len(pipeline_demo))
+    with col_m4:
+        st.metric("Facturas en CxC", len(cxc_demo))
+
+    st.divider()
+
+    if len(nodos_demo) == 0:
+        st.info("Aún no hay datos suficientes para la demo. Empieza registrando empresas, prospectos y oportunidades.")
+    else:
+        resumen_nodos = nodos_demo.groupby("nodo_tipo", as_index=False).size().rename(columns={"size": "total"})
+        if len(aristas_demo) > 0:
+            resumen_aristas = aristas_demo.groupby("tipo_relacion", as_index=False).size().rename(columns={"size": "total"})
+        else:
+            resumen_aristas = pd.DataFrame(columns=["tipo_relacion", "total"])
+
+        col_v1, col_v2 = st.columns(2)
+        with col_v1:
+            st.subheader("Distribución de nodos")
+            st.dataframe(resumen_nodos, width="stretch", hide_index=True)
+            st.bar_chart(resumen_nodos.set_index("nodo_tipo")["total"])
+        with col_v2:
+            st.subheader("Distribución de aristas")
+            if len(resumen_aristas) > 0:
+                st.dataframe(resumen_aristas, width="stretch", hide_index=True)
+                st.bar_chart(resumen_aristas.set_index("tipo_relacion")["total"])
+            else:
+                st.info("Todavía no hay relaciones suficientes para pintar aristas.")
+
+        st.divider()
+
+        tab1, tab2, tab3, tab4 = st.tabs(["🔵 Nodos", "🔗 Aristas", "📊 Pipeline", "💸 CxC"])
+
+        with tab1:
+            st.subheader("Contrato de nodos")
+            st.dataframe(
+                nodos_demo,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "nodo_tipo": "Tipo",
+                    "nodo_id": st.column_config.NumberColumn("ID", format="%d"),
+                    "clave_negocio": "Clave",
+                    "titulo": "Título",
+                    "subtitulo": "Subtítulo",
+                    "estado": "Estado",
+                    "monto": st.column_config.NumberColumn("Monto", format="$%.2f"),
+                    "moneda": "Moneda",
+                    "fecha_evento": "Fecha"
+                }
+            )
+
+        with tab2:
+            st.subheader("Contrato de aristas")
+            if len(aristas_demo) > 0:
+                st.dataframe(
+                    aristas_demo,
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "nodo_origen_tipo": "Origen tipo",
+                        "nodo_origen_id": st.column_config.NumberColumn("Origen ID", format="%d"),
+                        "origen_titulo": "Origen",
+                        "tipo_relacion": "Relación",
+                        "nodo_destino_tipo": "Destino tipo",
+                        "nodo_destino_id": st.column_config.NumberColumn("Destino ID", format="%d"),
+                        "destino_titulo": "Destino"
+                    }
+                )
+            else:
+                st.info("Aún no hay aristas disponibles en la base actual.")
+
+        with tab3:
+            st.subheader("Resumen de pipeline para dashboard")
+            if len(pipeline_demo) > 0:
+                st.dataframe(
+                    pipeline_demo,
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "etapa": "Etapa",
+                        "oportunidades_total": st.column_config.NumberColumn("Oportunidades", format="%d"),
+                        "monto_pipeline": st.column_config.NumberColumn("Monto", format="$%.2f"),
+                        "cotizaciones_total": st.column_config.NumberColumn("Cotizaciones", format="%d"),
+                        "ordenes_compra_total": st.column_config.NumberColumn("OCs", format="%d"),
+                        "facturas_total": st.column_config.NumberColumn("Facturas", format="%d")
+                    }
+                )
+                st.bar_chart(pipeline_demo.set_index("etapa")[["oportunidades_total", "facturas_total"]])
+            else:
+                st.info("No hay oportunidades para construir el pipeline de integración.")
+
+        with tab4:
+            st.subheader("CxC derivado del esquema legacy")
+            st.caption("En esta demo el esquema legacy no tiene pagos, por eso total_pagado queda en 0 y el saldo se muestra completo.")
+            if len(cxc_demo) > 0:
+                st.dataframe(
+                    cxc_demo,
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "id_factura": st.column_config.NumberColumn("Factura ID", format="%d"),
+                        "uuid": "UUID",
+                        "cliente": "Cliente",
+                        "numero_oc": "OC",
+                        "fecha_emision": "Fecha emisión",
+                        "total_factura": st.column_config.NumberColumn("Total", format="$%.2f"),
+                        "total_pagado": st.column_config.NumberColumn("Pagado", format="$%.2f"),
+                        "saldo_pendiente": st.column_config.NumberColumn("Saldo", format="$%.2f"),
+                        "estado_cobranza": "Estado cobranza",
+                        "antiguedad_dias": st.column_config.NumberColumn("Antigüedad", format="%d")
+                    }
+                )
+                st.bar_chart(cxc_demo.set_index("cliente")["saldo_pendiente"])
+            else:
+                st.info("Todavía no hay facturas para construir la vista CxC.")
+
     con.close()
 
 

@@ -9,9 +9,10 @@ Archivo: cfdi_emisor.py
 import base64
 import requests
 from datetime import datetime
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 from pathlib import Path
 import sys
+import xml.etree.ElementTree as ET
 
 # Agregar ruta del core al path para imports
 CORE_PATH = Path(__file__).parent.parent
@@ -24,9 +25,22 @@ from database import DatabaseV2
 # 🔧 CONFIGURACIÓN API TIMBRACFDI33
 # ==========================================================
 API_CONFIG = {
-    "pruebas": "https://pruebas.timbracfdi33.mx:1444/api/v2/Timbrado/RegistraEmisor",
-    "produccion": "https://api.timbracfdi33.mx:1444/api/v2/Timbrado/RegistraEmisor"
+    "pruebas": {
+        "registra_emisor": "https://pruebas.timbracfdi33.mx:1444/api/v2/Timbrado/RegistraEmisor",
+        "timbrado_cfdi": "https://pruebas.timbracfdi33.mx:1444/api/v2/Timbrado/TimbraCFDI"
+    },
+    "produccion": {
+        "registra_emisor": "https://api.timbracfdi33.mx:1444/api/v2/Timbrado/RegistraEmisor",
+        "timbrado_cfdi": "https://api.timbracfdi33.mx:1444/api/v2/Timbrado/TimbraCFDI"
+    }
 }
+
+
+def obtener_endpoint_api(modo: str, operacion: str) -> Optional[str]:
+    config_modo = API_CONFIG.get(modo)
+    if not config_modo:
+        return None
+    return config_modo.get(operacion)
 
 
 # ==========================================================
@@ -255,7 +269,7 @@ class RegistroEmisorCFDI:
             }
             
             # Seleccionar URL según modo
-            api_url = API_CONFIG.get(modo)
+            api_url = obtener_endpoint_api(modo, "registra_emisor")
             if not api_url:
                 return False, f"Modo inválido: {modo}", {}
             
@@ -302,6 +316,14 @@ class RegistroEmisorCFDI:
                 return False, "Token inválido o caducado (Error 401)", {}
             
             else:
+                try:
+                    response_data = response.json()
+                except ValueError:
+                    response_data = {}
+
+                mensaje_pac = response_data.get("Mensaje") if isinstance(response_data, dict) else None
+                codigo_pac = response_data.get("Codigo") if isinstance(response_data, dict) else None
+
                 self._registrar_evento(
                     entidad="cfdi_emisor",
                     id_entidad=0,
@@ -309,7 +331,17 @@ class RegistroEmisorCFDI:
                     valor_nuevo=response.text[:200],
                     usuario=rfc
                 )
-                return False, f"Error {response.status_code}: {response.text}", {}
+
+                if codigo_pac == 20133 or mensaje_pac == "Certificado es FIEL.":
+                    return False, (
+                        "El PAC rechazó el certificado porque es una FIEL/e.firma. "
+                        "Para timbrar debes cargar un CSD vigente del SAT: archivo .cer, archivo .key y su contraseña correspondientes al sello digital."
+                    ), response_data
+
+                if mensaje_pac:
+                    return False, f"Error {response.status_code}: {mensaje_pac}", response_data
+
+                return False, f"Error {response.status_code}: {response.text}", response_data
         
         except requests.exceptions.Timeout:
             return False, "Tiempo de espera agotado. Verifica tu conexión.", {}
@@ -324,6 +356,166 @@ class RegistroEmisorCFDI:
                 usuario=rfc
             )
             return False, f"Error inesperado: {str(e)}", {}
+
+    def _registrar_evento(self, entidad: str, id_entidad: int, accion: str,
+                         valor_nuevo: str, usuario: str):
+        """Registra evento en historial_general"""
+        conn = self.db.connection
+        cursor = conn.cursor()
+
+        timestamp = datetime.now().isoformat()
+        hash_evento = self._generar_hash(entidad, id_entidad, accion, timestamp)
+
+        cursor.execute("""
+            INSERT INTO historial_general
+            (entidad, id_entidad, accion, valor_nuevo, usuario, timestamp, hash_evento)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (entidad, id_entidad, accion, valor_nuevo, usuario, timestamp, hash_evento))
+
+        conn.commit()
+
+    def _generar_hash(self, entidad: str, id_entidad: int, accion: str, timestamp: str) -> str:
+        """Genera hash para evento de historial"""
+        import hashlib
+        cadena = f"{entidad}{id_entidad}{accion}{timestamp}"
+        return hashlib.sha256(cadena.encode()).hexdigest()[:16]
+
+
+class TimbradoCFDI:
+    """Cliente para timbrado CFDI usando TimbrarCFDI33."""
+
+    def __init__(self):
+        self.config_repo = ConfiguracionEmisor()
+        self.db = DatabaseV2()
+
+    def timbrar_cfdi(self, xml_comprobante: Union[str, bytes], id_comprobante: Optional[str] = None) -> Tuple[bool, str, Dict]:
+        config = self.config_repo.obtener_emisor_activo()
+        if not config:
+            return False, "No hay emisor CFDI configurado", {}
+
+        token = config.get("token")
+        modo = config.get("modo")
+        rfc = config.get("rfc") or "desconocido"
+
+        if not token:
+            return False, "La configuración CFDI no tiene token API", {}
+
+        api_url = obtener_endpoint_api(modo, "timbrado_cfdi")
+        if not api_url:
+            return False, f"Modo inválido: {modo}", {}
+
+        if isinstance(xml_comprobante, str):
+            xml_bytes = xml_comprobante.encode("utf-8")
+        else:
+            xml_bytes = xml_comprobante
+
+        payload = {
+            "XmlComprobanteBase64": base64.b64encode(xml_bytes).decode("utf-8")
+        }
+        if id_comprobante:
+            payload["IdComprobante"] = id_comprobante
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            response = requests.post(api_url, json=payload, headers=headers, timeout=60)
+            response_data = self._parse_response_json(response)
+
+            if response.status_code == 200 and response_data.get("Codigo") == 0:
+                xml_timbrado = response_data.get("Xml", "")
+                uuid = self._extraer_uuid_xml(xml_timbrado)
+                self._registrar_evento(
+                    entidad="cfdi_timbrado",
+                    id_entidad=0,
+                    accion="Timbrado exitoso",
+                    valor_nuevo=f"RFC: {rfc} | UUID: {uuid or 'sin_uuid'} | IdComprobante: {id_comprobante or 'n/d'}",
+                    usuario=rfc
+                )
+                if uuid:
+                    response_data["UUID"] = uuid
+                return True, "CFDI timbrado correctamente", response_data
+
+            mensaje_error = self._build_error_message(response.status_code, response_data, response.text)
+            self._registrar_evento(
+                entidad="cfdi_timbrado",
+                id_entidad=0,
+                accion=f"Error {response.status_code}",
+                valor_nuevo=mensaje_error[:300],
+                usuario=rfc
+            )
+            return False, mensaje_error, response_data
+        except requests.exceptions.Timeout:
+            return False, "Tiempo de espera agotado al timbrar CFDI", {}
+        except requests.exceptions.ConnectionError:
+            return False, "Error de conexión con TimbrarCFDI33", {}
+        except Exception as e:
+            self._registrar_evento(
+                entidad="cfdi_timbrado",
+                id_entidad=0,
+                accion="Error general",
+                valor_nuevo=str(e),
+                usuario=rfc
+            )
+            return False, f"Error inesperado al timbrar CFDI: {str(e)}", {}
+
+    def _parse_response_json(self, response: requests.Response) -> Dict:
+        try:
+            data = response.json()
+            return data if isinstance(data, dict) else {"raw": data}
+        except ValueError:
+            return {}
+
+    def _build_error_message(self, status_code: int, response_data: Dict, raw_text: str) -> str:
+        if response_data:
+            mensaje = response_data.get("Mensaje") or response_data.get("MensajeSat") or raw_text
+            codigo_sat = response_data.get("CodigoSat")
+            codigo = response_data.get("Codigo")
+            detalle = []
+            if codigo is not None:
+                detalle.append(f"Código {codigo}")
+            if codigo_sat:
+                detalle.append(f"SAT {codigo_sat}")
+            prefijo = " | ".join(detalle)
+            if prefijo:
+                return f"Error {status_code}: {prefijo} - {mensaje}"
+            return f"Error {status_code}: {mensaje}"
+        return f"Error {status_code}: {raw_text}"
+
+    def _extraer_uuid_xml(self, xml_timbrado: str) -> Optional[str]:
+        if not xml_timbrado:
+            return None
+        try:
+            root = ET.fromstring(xml_timbrado)
+            for node in root.iter():
+                if node.tag.endswith("TimbreFiscalDigital"):
+                    return node.attrib.get("UUID")
+        except ET.ParseError:
+            return None
+        return None
+
+    def _registrar_evento(self, entidad: str, id_entidad: int, accion: str,
+                         valor_nuevo: str, usuario: str):
+        conn = self.db.connection
+        cursor = conn.cursor()
+
+        timestamp = datetime.now().isoformat()
+        hash_evento = self._generar_hash(entidad, id_entidad, accion, timestamp)
+
+        cursor.execute("""
+            INSERT INTO historial_general
+            (entidad, id_entidad, accion, valor_nuevo, usuario, timestamp, hash_evento)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (entidad, id_entidad, accion, valor_nuevo, usuario, timestamp, hash_evento))
+
+        conn.commit()
+
+    def _generar_hash(self, entidad: str, id_entidad: int, accion: str, timestamp: str) -> str:
+        import hashlib
+        cadena = f"{entidad}{id_entidad}{accion}{timestamp}"
+        return hashlib.sha256(cadena.encode()).hexdigest()[:16]
     
     def _registrar_evento(self, entidad: str, id_entidad: int, accion: str, 
                          valor_nuevo: str, usuario: str):

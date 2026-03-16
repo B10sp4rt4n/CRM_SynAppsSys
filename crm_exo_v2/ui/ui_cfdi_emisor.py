@@ -15,6 +15,7 @@ sys.path.insert(0, str(CORE_PATH))
 
 from facturacion.cfdi_emisor import (
     RegistroEmisorCFDI,
+    TimbradoCFDI,
     obtener_configuracion_emisor,
     validar_configuracion_cfdi
 )
@@ -224,6 +225,102 @@ def ui_registro_emisor():
                     - Verifica que sea la contraseña correcta del archivo .key
                     - Asegúrate de que los archivos .cer y .key correspondan
                     """)
+                elif "fiel" in mensaje.lower() or datos.get("Codigo") == 20133:
+                    st.warning("""
+                    **El certificado cargado es una FIEL/e.firma, no un CSD.**
+
+                    Para timbrar CFDI necesitas el Certificado de Sello Digital del SAT:
+                    - Archivo .cer del CSD
+                    - Archivo .key del CSD
+                    - Contraseña de esa llave privada
+
+                    La e.firma/FIEL no sirve para timbrado.
+                    """)
+
+    st.divider()
+    st.subheader("🧪 Prueba manual de timbrado")
+    st.caption("Úsala para validar conexión con TimbrarCFDI33 mientras el generador XML nativo del CRM aún no está conectado al flujo de facturación.")
+
+    valido_cfdi, mensaje_cfdi = validar_configuracion_cfdi()
+    if not valido_cfdi:
+        st.warning(f"⚠️ {mensaje_cfdi}. Primero configura el emisor y sus certificados para habilitar esta prueba.")
+        return
+
+    config_timbrado = obtener_configuracion_emisor()
+    if config_timbrado:
+        st.info(f"Timbrando con RFC {config_timbrado['rfc']} en modo {config_timbrado['modo']}")
+
+    with st.form("form_prueba_timbrado", clear_on_submit=False):
+        col_xml_1, col_xml_2 = st.columns([2, 1])
+
+        with col_xml_1:
+            xml_texto = st.text_area(
+                "XML CFDI",
+                height=240,
+                placeholder="Pega aquí el XML CFDI sin timbrar..."
+            )
+
+        with col_xml_2:
+            xml_file = st.file_uploader(
+                "O carga un XML",
+                type=["xml"],
+                help="Si cargas archivo, se usará sobre el texto pegado"
+            )
+            id_comprobante = st.text_input(
+                "IdComprobante",
+                help="Campo opcional para rastreo del lado del PAC o soporte"
+            )
+
+        enviar_timbrado = st.form_submit_button(
+            "📮 Timbrar XML en PAC",
+            width="stretch",
+            type="primary"
+        )
+
+        if enviar_timbrado:
+            xml_payload = xml_texto.strip()
+            if xml_file is not None:
+                xml_payload = xml_file.read().decode("utf-8", errors="ignore").strip()
+
+            if not xml_payload:
+                st.error("⚠️ Debes pegar o cargar un XML antes de timbrar.")
+                return
+
+            if "<cfdi:Comprobante" not in xml_payload and "<Comprobante" not in xml_payload:
+                st.warning("El contenido no parece un CFDI válido. Revisa que el XML sea el comprobante sin timbrar.")
+
+            with st.spinner("📡 Enviando XML al PAC para timbrado..."):
+                cliente_timbrado = TimbradoCFDI()
+                exito, mensaje, datos = cliente_timbrado.timbrar_cfdi(
+                    xml_comprobante=xml_payload,
+                    id_comprobante=id_comprobante.strip() or None
+                )
+
+            if exito:
+                st.success(f"✅ {mensaje}")
+                if datos.get("UUID"):
+                    st.write("UUID timbrado:", datos["UUID"])
+                if datos.get("CadenaOriginalTimbre"):
+                    with st.expander("🔗 Cadena original del timbre"):
+                        st.code(datos["CadenaOriginalTimbre"])
+                if datos.get("Xml"):
+                    with st.expander("📄 XML timbrado"):
+                        st.code(datos["Xml"], language="xml")
+                    st.download_button(
+                        "⬇️ Descargar XML timbrado",
+                        data=datos["Xml"],
+                        file_name=f"cfdi_timbrado_{datos.get('UUID', 'salida')}.xml",
+                        mime="application/xml"
+                    )
+                if datos.get("CodigoQr"):
+                    st.caption("El PAC devolvió CodigoQr; queda disponible en la respuesta para una futura representación impresa.")
+                with st.expander("🧾 Respuesta completa del PAC"):
+                    st.json(datos)
+            else:
+                st.error(f"❌ {mensaje}")
+                if datos:
+                    with st.expander("🔍 Respuesta de error del PAC"):
+                        st.json(datos)
 
 
 # ==========================================================

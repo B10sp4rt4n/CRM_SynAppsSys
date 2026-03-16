@@ -129,12 +129,44 @@ En cada arranque, el sistema:
 **Pruebas:**
 ```
 https://pruebas.timbracfdi33.mx:1444/api/v2/Timbrado/RegistraEmisor
+https://pruebas.timbracfdi33.mx:1444/api/v2/Timbrado/TimbraCFDI
 ```
 
 **Producción:**
 ```
 https://api.timbracfdi33.mx:1444/api/v2/Timbrado/RegistraEmisor
+https://api.timbracfdi33.mx:1444/api/v2/Timbrado/TimbraCFDI
 ```
+
+### Contrato de timbrado CFDI
+
+Autenticación:
+
+- Header Authorization con Bearer token
+- Header Content-Type application/json
+
+Payload:
+
+```json
+{
+    "XmlComprobanteBase64": "<xml codificado en base64>",
+    "IdComprobante": "opcional"
+}
+```
+
+Respuesta exitosa esperada:
+
+```json
+{
+    "Codigo": 0,
+    "Mensaje": "",
+    "Xml": "<cfdi timbrado>",
+    "CodigoQr": "...",
+    "CadenaOriginalTimbre": "..."
+}
+```
+
+El cliente de timbrado ya quedó encapsulado en la clase TimbradoCFDI dentro de [crm_exo_v2/core/facturacion/cfdi_emisor.py](crm_exo_v2/core/facturacion/cfdi_emisor.py).
 
 ### Códigos de respuesta
 
