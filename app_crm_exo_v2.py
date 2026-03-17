@@ -35,12 +35,32 @@ DB_PATH = get_sqlite_db_path(BASE_DIR)
 
 # Importar módulos de facturación CFDI
 try:
-    from ui_cfdi_emisor import ui_registro_emisor, widget_estado_cfdi
+    from ui_cfdi_emisor import ui_registro_emisor, widget_estado_cfdi, ui_diagnostico_certificados
     from facturacion.cfdi_emisor import validar_configuracion_cfdi, obtener_configuracion_emisor
     CFDI_DISPONIBLE = True
 except ImportError as e:
     CFDI_DISPONIBLE = False
     print(f"⚠️ Módulo CFDI no disponible: {e}")
+
+# Importar componentes UX mejorados (Nivel 1 + Nivel 2)
+try:
+    from ux_components import (
+        advanced_search_widget,
+        pipeline_funnel_interactive,
+        timeline_actividad_visual,
+        grafico_metricas_dashboard,
+        keyboard_shortcuts_handler,
+        smart_navigation_menu,
+        contextual_quick_actions,
+        notification_center,
+        bulk_operations_widget,
+        import_export_wizard,
+        dark_mode_toggle
+    )
+    UX_COMPONENTS_DISPONIBLES = True
+except ImportError as e:
+    UX_COMPONENTS_DISPONIBLES = False
+    print(f"⚠️ Componentes UX no disponibles: {e}")
 
 
 APP_DB_BACKEND = get_legacy_app_backend()
@@ -1066,6 +1086,11 @@ st.markdown("""
 with st.sidebar:
     st.markdown("### 🚀 CRM-EXO v2")
     st.markdown("**Arquitectura AUP de 4 núcleos**")
+    
+    # Modo Oscuro (Nivel 2 UX)
+    if UX_COMPONENTS_DISPONIBLES:
+        dark_mode_toggle()
+    
     if APP_DB_BACKEND == "sqlite":
         if APP_DB_BACKEND_STATUS == "postgres-configured-schema-incompatible":
             st.caption("DB runtime: SQLite (DATABASE_URL detectado, esquema legado no compatible)")
@@ -1091,6 +1116,7 @@ with st.sidebar:
             "💰 N3: Facturación",
             "🪶 N4: Trazabilidad",
             "📊 Pipeline Visual",
+            "📦 Import/Export",
             "🧭 Demo Integración",
             "⚙️ Configuración CFDI"
         ],
@@ -1111,6 +1137,16 @@ with st.sidebar:
         except Exception:
             pass
         st.divider()
+    
+    # Sistema de Notificaciones Inteligente (Nivel 2)
+    if UX_COMPONENTS_DISPONIBLES:
+        try:
+            con_notif = conectar()
+            notification_center(con_notif)
+            con_notif.close()
+        except Exception as e:
+            # Si falla, no romper el sidebar
+            print(f"⚠️ Error en notificaciones: {e}")
     
     # Mostrar flujo estructural
     st.markdown("**Flujo Comercial:**")
@@ -1133,6 +1169,11 @@ with st.sidebar:
 
 if menu == "🏠 Dashboard":
     st.markdown('<div class="main-header">🏠 Dashboard CRM-EXO v2</div>', unsafe_allow_html=True)
+    
+    # Agregar navegación mejorada y shortcuts
+    if UX_COMPONENTS_DISPONIBLES:
+        smart_navigation_menu("Dashboard")
+        keyboard_shortcuts_handler()
     
     con = conectar()
     
@@ -1165,6 +1206,23 @@ if menu == "🏠 Dashboard":
     
     st.divider()
     
+    # Indicadores de completitud con gráfico mejorado
+    if UX_COMPONENTS_DISPONIBLES:
+        try:
+            metricas = obtener_metricas_helper(con)
+            metricas_display = {
+                "Empresas sin contacto": metricas.get("empresas_sin_contacto", 0),
+                "Prospectos sin oportunidad": metricas.get("prospectos_sin_oportunidad", 0),
+                "Oportunidades sin cotización": metricas.get("oportunidades_sin_cotizacion", 0),
+                "Ganadas sin OC": metricas.get("ganadas_sin_oc", 0),
+                "OCs sin factura": metricas.get("ocs_sin_factura", 0)
+            }
+            grafico_metricas_dashboard(metricas_display)
+        except Exception as e:
+            print(f"Error en gráfico de métricas: {e}")
+    
+    st.divider()
+    
     # Widget de estado CFDI
     if CFDI_DISPONIBLE:
         try:
@@ -1173,7 +1231,7 @@ if menu == "🏠 Dashboard":
         except Exception:
             pass  # Si falla el widget, no romper el dashboard
     
-    # Pipeline por etapa
+    # Pipeline por etapa con visualización mejorada
     st.subheader("📊 Pipeline de Oportunidades")
     
     pipeline = pd.read_sql("""
@@ -1196,24 +1254,40 @@ if menu == "🏠 Dashboard":
     """, con)
     
     if len(pipeline) > 0:
-        col_pipe1, col_pipe2 = st.columns(2)
-        
-        with col_pipe1:
-            st.dataframe(
-                pipeline,
-                width="stretch",
-                column_config={
-                    "etapa": "Etapa",
-                    "cantidad": st.column_config.NumberColumn("Cantidad", format="%d"),
-                    "monto_total": st.column_config.NumberColumn("Monto Total", format="$%.2f"),
-                    "prob_promedio": st.column_config.NumberColumn("Prob. Promedio", format="%.1f%%")
-                }
-            )
-        
-        with col_pipe2:
-            # Gráfico simple de barras con st.bar_chart
-            chart_data = pipeline.set_index('etapa')['monto_total']
-            st.bar_chart(chart_data)
+        # Usar funnel interactivo si está disponible
+        if UX_COMPONENTS_DISPONIBLES:
+            try:
+                df_opor = pd.read_sql("SELECT * FROM oportunidades WHERE etapa NOT IN ('Perdida')", con)
+                pipeline_funnel_interactive(df_opor)
+            except Exception as e:
+                print(f"Error en funnel interactivo: {e}")
+                # Fallback a visualización básica
+                col_pipe1, col_pipe2 = st.columns(2)
+                with col_pipe1:
+                    st.dataframe(pipeline, width="stretch")
+                with col_pipe2:
+                    chart_data = pipeline.set_index('etapa')['monto_total']
+                    st.bar_chart(chart_data)
+        else:
+            # Visualización básica original
+            col_pipe1, col_pipe2 = st.columns(2)
+            
+            with col_pipe1:
+                st.dataframe(
+                    pipeline,
+                    width="stretch",
+                    column_config={
+                        "etapa": "Etapa",
+                        "cantidad": st.column_config.NumberColumn("Cantidad", format="%d"),
+                        "monto_total": st.column_config.NumberColumn("Monto Total", format="$%.2f"),
+                        "prob_promedio": st.column_config.NumberColumn("Prob. Promedio", format="%.1f%%")
+                    }
+                )
+            
+            with col_pipe2:
+                # Gráfico simple de barras con st.bar_chart
+                chart_data = pipeline.set_index('etapa')['monto_total']
+                st.bar_chart(chart_data)
     else:
         st.info("No hay oportunidades activas. Crea la primera en N2: Transacción")
     
@@ -1267,6 +1341,12 @@ elif menu == "🏗️ N1: Identidad":
     st.markdown('<div class="main-header">🏗️ Núcleo 1: Identidad</div>', unsafe_allow_html=True)
     st.markdown("**Flujo:** Empresa → Contacto → Prospecto")
     
+    # Navegación mejorada y shortcuts
+    if UX_COMPONENTS_DISPONIBLES:
+        smart_navigation_menu("Identidad")
+        keyboard_shortcuts_handler()
+        contextual_quick_actions("empresas")
+    
     tab1, tab2, tab3 = st.tabs(["🏢 Empresas", "👤 Contactos", "📈 Prospectos"])
     
     # TAB: Empresas
@@ -1312,7 +1392,42 @@ elif menu == "🏗️ N1: Identidad":
             con.close()
             
             if len(empresas) > 0:
-                st.dataframe(empresas, width="stretch", hide_index=True)
+                # Búsqueda avanzada si está disponible
+                if UX_COMPONENTS_DISPONIBLES:
+                    empresas_filtradas = advanced_search_widget(
+                        empresas,
+                        entity_name="Empresas",
+                        search_columns=['nombre', 'rfc', 'sector'],
+                        category_filters={'sector': 'Sector'}
+                    )
+                    st.dataframe(empresas_filtradas, width="stretch", hide_index=True)
+                    
+                    # Operaciones masivas
+                    st.divider()
+                    
+                    def eliminar_empresas(ids):
+                        con_bulk = conectar()
+                        cur = con_bulk.cursor()
+                        for id_empresa in ids:
+                            # Verificar si tiene contactos
+                            cur.execute("SELECT COUNT(*) as total FROM contactos WHERE id_empresa = ?", (id_empresa,))
+                            if cur.fetchone()["total"] > 0:
+                                raise Exception(f"Empresa ID {id_empresa} tiene contactos asociados")
+                            cur.execute("DELETE FROM empresas WHERE id_empresa = ?", (id_empresa,))
+                            registrar_evento(con_bulk, "empresa", id_empresa, "ELIMINAR", "Eliminación masiva")
+                        con_bulk.commit()
+                        con_bulk.close()
+                    
+                    bulk_operations_widget(
+                        empresas_filtradas,
+                        entity_name="Empresas",
+                        id_column='id_empresa',
+                        name_column='nombre',
+                        on_delete_callback=eliminar_empresas,
+                        updatable_fields=['sector', 'telefono', 'correo']
+                    )
+                else:
+                    st.dataframe(empresas, width="stretch", hide_index=True)
             else:
                 st.info("No hay empresas registradas")
     
@@ -1353,16 +1468,46 @@ elif menu == "🏗️ N1: Identidad":
             with col2:
                 con = conectar()
                 contactos = pd.read_sql("""
-                    SELECT c.id_contacto, e.nombre as empresa, c.nombre, c.correo, c.puesto
+                    SELECT c.id_contacto, e.nombre as empresa, c.nombre, c.correo, c.puesto, c.telefono
                     FROM contactos c
                     JOIN empresas e ON e.id_empresa = c.id_empresa
                     ORDER BY c.fecha_alta DESC
-                    LIMIT 10
                 """, con)
                 con.close()
                 
                 if len(contactos) > 0:
-                    st.dataframe(contactos, width="stretch", hide_index=True)
+                    # Búsqueda avanzada si está disponible
+                    if UX_COMPONENTS_DISPONIBLES:
+                        contactos_filtrados = advanced_search_widget(
+                            contactos,
+                            entity_name="Contactos",
+                            search_columns=['nombre', 'correo', 'empresa', 'puesto'],
+                            category_filters={'empresa': 'Empresa'}
+                        )
+                        st.dataframe(contactos_filtrados, width="stretch", hide_index=True)
+                        
+                        # Operaciones masivas
+                        st.divider()
+                        
+                        def eliminar_contactos(ids):
+                            con_bulk = conectar()
+                            cur = con_bulk.cursor()
+                            for id_contacto in ids:
+                                cur.execute("DELETE FROM contactos WHERE id_contacto = ?", (id_contacto,))
+                                registrar_evento(con_bulk, "contacto", id_contacto, "ELIMINAR", "Eliminación masiva")
+                            con_bulk.commit()
+                            con_bulk.close()
+                        
+                        bulk_operations_widget(
+                            contactos_filtrados,
+                            entity_name="Contactos",
+                            id_column='id_contacto',
+                            name_column='nombre',
+                            on_delete_callback=eliminar_contactos,
+                            updatable_fields=['correo', 'telefono', 'puesto']
+                        )
+                    else:
+                        st.dataframe(contactos, width="stretch", hide_index=True)
                 else:
                     st.info("No hay contactos registrados")
     
@@ -1499,17 +1644,51 @@ elif menu == "💼 N2: Transacción":
             oportunidades = pd.read_sql("""
                 SELECT o.id_oportunidad, o.nombre, o.etapa, o.probabilidad,
                        ROUND(o.monto_estimado, 2) as monto, o.oc_recibida,
-                       e.nombre as empresa
+                       e.nombre as empresa, o.fecha_estimada_cierre
                 FROM oportunidades o
                 JOIN prospectos p ON p.id_prospecto = o.id_prospecto
                 JOIN empresas e ON e.id_empresa = p.id_empresa
                 ORDER BY o.fecha_creacion DESC
-                LIMIT 10
             """, con)
             con.close()
             
             if len(oportunidades) > 0:
-                st.dataframe(oportunidades, width="stretch", hide_index=True)
+                # Búsqueda avanzada si está disponible
+                if UX_COMPONENTS_DISPONIBLES:
+                    oportunidades_filtradas = advanced_search_widget(
+                        oportunidades,
+                        entity_name="Oportunidades",
+                        search_columns=['nombre', 'empresa'],
+                        category_filters={'etapa': 'Etapa', 'empresa': 'Empresa'}
+                    )
+                    st.dataframe(oportunidades_filtradas, width="stretch", hide_index=True)
+                    
+                    # Operaciones masivas
+                    st.divider()
+                    
+                    def eliminar_oportunidades(ids):
+                        con_bulk = conectar()
+                        cur = con_bulk.cursor()
+                        for id_oportunidad in ids:
+                            # Verificar si tiene cotizaciones
+                            cur.execute("SELECT COUNT(*) as total FROM cotizaciones WHERE id_oportunidad = ?", (id_oportunidad,))
+                            if cur.fetchone()["total"] > 0:
+                                raise Exception(f"Oportunidad ID {id_oportunidad} tiene cotizaciones asociadas")
+                            cur.execute("DELETE FROM oportunidades WHERE id_oportunidad = ?", (id_oportunidad,))
+                            registrar_evento(con_bulk, "oportunidad", id_oportunidad, "ELIMINAR", "Eliminación masiva")
+                        con_bulk.commit()
+                        con_bulk.close()
+                    
+                    bulk_operations_widget(
+                        oportunidades_filtradas,
+                        entity_name="Oportunidades",
+                        id_column='id_oportunidad',
+                        name_column='nombre',
+                        on_delete_callback=eliminar_oportunidades,
+                        updatable_fields=['etapa', 'probabilidad', 'fecha_estimada_cierre']
+                    )
+                else:
+                    st.dataframe(oportunidades, width="stretch", hide_index=True)
                 
                 # Acciones sobre oportunidades
                 st.divider()
@@ -1838,6 +2017,11 @@ elif menu == "🪶 N4: Trazabilidad":
     st.markdown('<div class="main-header">🪶 Núcleo 4: Trazabilidad Forense</div>', unsafe_allow_html=True)
     st.markdown("**Sistema de auditoría con hash SHA256**")
     
+    # Navegación mejorada y shortcuts
+    if UX_COMPONENTS_DISPONIBLES:
+        smart_navigation_menu("Trazabilidad")
+        keyboard_shortcuts_handler()
+    
     tab1, tab2 = st.tabs(["📋 Historial General", "🔐 Verificación de Hashes"])
     
     # TAB: Historial
@@ -1880,10 +2064,30 @@ elif menu == "🪶 N4: Trazabilidad":
         con.close()
         
         if len(historial) > 0:
-            # Mostrar con hash truncado
+            # Timeline visual si está disponible
+            if UX_COMPONENTS_DISPONIBLES:
+                try:
+                    timeline_actividad_visual(historial, limit=50)
+                except Exception as e:
+                    print(f"Error en timeline visual: {e}")
+            
+            # Tabla con hash truncado
             historial['hash_corto'] = historial['hash_evento'].str[:16]
+            
+            # Búsqueda avanzada si está disponible
+            if UX_COMPONENTS_DISPONIBLES:
+                historial_filtrado = advanced_search_widget(
+                    historial,
+                    entity_name="Historial",
+                    search_columns=['entidad', 'accion', 'valor_nuevo', 'usuario'],
+                    date_column='timestamp',
+                    category_filters={'entidad': 'Entidad', 'accion': 'Acción'}
+                )
+            else:
+                historial_filtrado = historial
+            
             st.dataframe(
-                historial[['id_evento', 'entidad', 'id_entidad', 'accion', 'valor_nuevo', 
+                historial_filtrado[['id_evento', 'entidad', 'id_entidad', 'accion', 'valor_nuevo', 
                           'usuario', 'timestamp', 'hash_corto']],
                 width="stretch",
                 hide_index=True
@@ -1963,6 +2167,12 @@ elif menu == "🪶 N4: Trazabilidad":
 
 elif menu == "📊 Pipeline Visual":
     st.markdown('<div class="main-header">📊 Pipeline Visual Completo</div>', unsafe_allow_html=True)
+    
+    # Navegación mejorada y shortcuts
+    if UX_COMPONENTS_DISPONIBLES:
+        smart_navigation_menu("Pipeline Visual")
+        keyboard_shortcuts_handler()
+        contextual_quick_actions("oportunidades")
     
     con = conectar()
 
@@ -2255,6 +2465,86 @@ elif menu == "📊 Pipeline Visual":
 
 
 # ================================================================
+#  IMPORT/EXPORT MASIVO
+# ================================================================
+
+elif menu == "📦 Import/Export":
+    st.markdown('<div class="main-header">📦 Import/Export Masivo</div>', unsafe_allow_html=True)
+    st.markdown("**Asistente para importación y exportación masiva de datos**")
+    
+    if UX_COMPONENTS_DISPONIBLES:
+        tab1, tab2, tab3, tab4 = st.tabs(["🏢 Empresas", "👤 Contactos", "🎯 Oportunidades", "💰 Facturas"])
+        
+        # TAB: Empresas
+        with tab1:
+            con = conectar()
+            import_export_wizard(
+                con,
+                entity_name="Empresas",
+                table_name="empresas",
+                columns_map={
+                    'nombre': 'nombre',
+                    'rfc': 'rfc',
+                    'sector': 'sector',
+                    'telefono': 'telefono',
+                    'correo': 'correo'
+                }
+            )
+            con.close()
+        
+        # TAB: Contactos
+        with tab2:
+            con = conectar()
+            import_export_wizard(
+                con,
+                entity_name="Contactos",
+                table_name="contactos",
+                columns_map={
+                    'nombre': 'nombre',
+                    'correo': 'correo',
+                    'telefono': 'telefono',
+                    'puesto': 'puesto'
+                }
+            )
+            con.close()
+        
+        # TAB: Oportunidades
+        with tab3:
+            con = conectar()
+            import_export_wizard(
+                con,
+                entity_name="Oportunidades",
+                table_name="oportunidades",
+                columns_map={
+                    'nombre': 'nombre',
+                    'etapa': 'etapa',
+                    'probabilidad': 'probabilidad',
+                    'monto_estimado': 'monto_estimado'
+                }
+            )
+            con.close()
+        
+        # TAB: Facturas
+        with tab4:
+            con = conectar()
+            import_export_wizard(
+                con,
+                entity_name="Facturas",
+                table_name="facturas",
+                columns_map={
+                    'folio_fiscal': 'folio_fiscal',
+                    'fecha_emision': 'fecha_emision',
+                    'subtotal': 'subtotal',
+                    'iva': 'iva',
+                    'total': 'total'
+                }
+            )
+            con.close()
+    else:
+        st.warning("⚠️ Componentes UX no disponibles. Instala los componentes necesarios.")
+
+
+# ================================================================
 #  DEMO INTEGRACIÓN
 # ================================================================
 
@@ -2399,32 +2689,46 @@ elif menu == "🧭 Demo Integración":
 
 elif menu == "⚙️ Configuración CFDI":
     if CFDI_DISPONIBLE:
-        # Mostrar interfaz completa de configuración CFDI
-        ui_registro_emisor()
+        st.markdown('<div class="main-header">⚙️ Configuración de Facturación CFDI</div>', unsafe_allow_html=True)
         
-        # Widget de estado al final
-        st.divider()
-        st.subheader("📊 Estado de Configuración")
+        # Tabs para organizar las funcionalidades
+        tab_config, tab_diagnostico = st.tabs([
+            "📝 Registrar Emisor",
+            "🔍 Diagnóstico de Certificados"
+        ])
         
-        valido, mensaje = validar_configuracion_cfdi()
+        with tab_config:
+            # Mostrar interfaz completa de configuración CFDI
+            ui_registro_emisor()
+            
+            # Widget de estado al final
+            st.divider()
+            st.subheader("📊 Estado de Configuración")
+            
+            valido, mensaje = validar_configuracion_cfdi()
+            
+            if valido:
+                st.success(f"✅ {mensaje}")
+                st.info("""
+                **Siguiente paso:** 
+                - Ir a la sección **💰 N3: Facturación** para timbrar facturas
+                - Verifica que el emisor coincida con tus datos fiscales
+                - Revisa la vigencia de tus certificados CSD
+                """)
+            else:
+                st.warning(f"⚠️ {mensaje}")
+                st.info("""
+                **Completa la configuración:**
+                1. Registra tu cuenta en https://timbracfdi33.mx
+                2. Obtén tu token de API (pruebas o producción)
+                3. Descarga tus certificados CSD del portal del SAT
+                4. Completa el formulario arriba
+                """)
         
-        if valido:
-            st.success(f"✅ {mensaje}")
-            st.info("""
-            **Siguiente paso:** 
-            - Ir a la sección **💰 N3: Facturación** para timbrar facturas
-            - Verifica que el emisor coincida con tus datos fiscales
-            - Revisa la vigencia de tus certificados CSD
-            """)
-        else:
-            st.warning(f"⚠️ {mensaje}")
-            st.info("""
-            **Completa la configuración:**
-            1. Registra tu cuenta en https://timbracfdi33.mx
-            2. Obtén tu token de API (pruebas o producción)
-            3. Descarga tus certificados CSD del portal del SAT
-            4. Completa el formulario arriba
-            """)
+        with tab_diagnostico:
+            # Mostrar herramienta de diagnóstico de certificados
+            ui_diagnostico_certificados()
+    
     else:
         st.error("❌ Módulo CFDI no disponible")
         st.warning("""
