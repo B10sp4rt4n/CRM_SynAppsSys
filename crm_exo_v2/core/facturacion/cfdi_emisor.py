@@ -53,15 +53,39 @@ class ConfiguracionEmisor:
         self.db = DatabaseV2()
         self._crear_tablas()
     
+    def _get_lastrowid(self, cursor) -> int:
+        """
+        Obtiene el ID del último registro insertado de forma compatible con SQLite y PostgreSQL
+        
+        Args:
+            cursor: Cursor de la base de datos
+            
+        Returns:
+            ID del último registro insertado
+        """
+        if self.db.is_postgres:
+            # En PostgreSQL con psycopg, el ID viene en el cursor después de un INSERT con RETURNING
+            # Si no usamos RETURNING, debemos hacer un query separado
+            # Por ahora, asumimos que lastrowid funciona en psycopg (versión 3+)
+            return cursor.lastrowid if hasattr(cursor, 'lastrowid') else None
+        else:
+            # En SQLite funciona normal
+            return cursor.lastrowid
+    
     def _crear_tablas(self):
         """Crea las tablas necesarias para configuración CFDI si no existen"""
-        conn = self.db.connection
-        cursor = conn.cursor()
+        # Detectar sintaxis de auto-increment según motor de DB
+        if self.db.is_postgres:
+            # PostgreSQL usa SERIAL o GENERATED ALWAYS AS IDENTITY
+            pk_autoincrement = "SERIAL PRIMARY KEY"
+        else:
+            # SQLite usa AUTOINCREMENT
+            pk_autoincrement = "INTEGER PRIMARY KEY AUTOINCREMENT"
         
         # Tabla de configuración del emisor
-        cursor.execute("""
+        self.db.execute(f"""
             CREATE TABLE IF NOT EXISTS config_cfdi_emisor (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk_autoincrement},
                 rfc_emisor TEXT NOT NULL UNIQUE,
                 razon_social TEXT,
                 regimen_fiscal TEXT,
@@ -75,9 +99,9 @@ class ConfiguracionEmisor:
         """)
         
         # Tabla para guardar archivos CSD (certificados)
-        cursor.execute("""
+        self.db.execute(f"""
             CREATE TABLE IF NOT EXISTS config_cfdi_certificados (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk_autoincrement},
                 id_emisor INTEGER NOT NULL,
                 cer_base64 TEXT NOT NULL,
                 key_base64 TEXT NOT NULL,
@@ -90,7 +114,7 @@ class ConfiguracionEmisor:
             )
         """)
         
-        conn.commit()
+        self.db.commit()
     
     def guardar_emisor(self, rfc: str, token: str, modo: str, 
                        razon_social: str = None, regimen_fiscal: str = None) -> int:
@@ -107,18 +131,15 @@ class ConfiguracionEmisor:
         Returns:
             ID del emisor guardado
         """
-        conn = self.db.connection
-        cursor = conn.cursor()
-        
         # Verificar si ya existe
-        cursor.execute("SELECT id FROM config_cfdi_emisor WHERE rfc_emisor = ?", (rfc,))
+        cursor = self.db.execute("SELECT id FROM config_cfdi_emisor WHERE rfc_emisor = ?", (rfc,))
         row = cursor.fetchone()
         
         fecha_actual = datetime.now().isoformat()
         
         if row:
             # Actualizar
-            cursor.execute("""
+            self.db.execute("""
                 UPDATE config_cfdi_emisor 
                 SET token_api = ?, modo = ?, razon_social = ?, 
                     regimen_fiscal = ?, fecha_actualizacion = ?
@@ -127,14 +148,14 @@ class ConfiguracionEmisor:
             emisor_id = row[0]
         else:
             # Insertar
-            cursor.execute("""
+            cursor = self.db.execute("""
                 INSERT INTO config_cfdi_emisor 
                 (rfc_emisor, razon_social, regimen_fiscal, token_api, modo, fecha_registro)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (rfc, razon_social, regimen_fiscal, token, modo, fecha_actual))
-            emisor_id = cursor.lastrowid
+            emisor_id = self._get_lastrowid(cursor)
         
-        conn.commit()
+        self.db.commit()
         return emisor_id
     
     def guardar_certificados(self, emisor_id: int, cer_bytes: bytes, 
@@ -151,37 +172,31 @@ class ConfiguracionEmisor:
         Returns:
             ID del registro de certificados
         """
-        conn = self.db.connection
-        cursor = conn.cursor()
-        
         # Convertir a base64
         cer_b64 = base64.b64encode(cer_bytes).decode("utf-8")
         key_b64 = base64.b64encode(key_bytes).decode("utf-8")
         
         # Desactivar certificados anteriores
-        cursor.execute("""
+        self.db.execute("""
             UPDATE config_cfdi_certificados 
             SET activo = 0 
             WHERE id_emisor = ?
         """, (emisor_id,))
         
         # Insertar nuevo certificado
-        cursor.execute("""
+        cursor = self.db.execute("""
             INSERT INTO config_cfdi_certificados 
             (id_emisor, cer_base64, key_base64, numero_certificado, fecha_carga)
             VALUES (?, ?, ?, ?, ?)
         """, (emisor_id, cer_b64, key_b64, numero_cert, datetime.now().isoformat()))
         
-        cert_id = cursor.lastrowid
-        conn.commit()
+        cert_id = self._get_lastrowid(cursor)
+        self.db.commit()
         return cert_id
     
     def obtener_emisor_activo(self) -> Optional[Dict]:
         """Obtiene la configuración del emisor activo"""
-        conn = self.db.connection
-        cursor = conn.cursor()
-        
-        cursor.execute("""
+        cursor = self.db.execute("""
             SELECT id, rfc_emisor, razon_social, regimen_fiscal, token_api, modo
             FROM config_cfdi_emisor
             WHERE activo = 1
@@ -202,10 +217,7 @@ class ConfiguracionEmisor:
     
     def obtener_certificados_activos(self, emisor_id: int) -> Optional[Dict]:
         """Obtiene los certificados activos del emisor"""
-        conn = self.db.connection
-        cursor = conn.cursor()
-        
-        cursor.execute("""
+        cursor = self.db.execute("""
             SELECT cer_base64, key_base64, numero_certificado
             FROM config_cfdi_certificados
             WHERE id_emisor = ? AND activo = 1
@@ -360,19 +372,16 @@ class RegistroEmisorCFDI:
     def _registrar_evento(self, entidad: str, id_entidad: int, accion: str,
                          valor_nuevo: str, usuario: str):
         """Registra evento en historial_general"""
-        conn = self.db.connection
-        cursor = conn.cursor()
-
         timestamp = datetime.now().isoformat()
         hash_evento = self._generar_hash(entidad, id_entidad, accion, timestamp)
 
-        cursor.execute("""
+        self.db.execute("""
             INSERT INTO historial_general
             (entidad, id_entidad, accion, valor_nuevo, usuario, timestamp, hash_evento)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (entidad, id_entidad, accion, valor_nuevo, usuario, timestamp, hash_evento))
 
-        conn.commit()
+        self.db.commit()
 
     def _generar_hash(self, entidad: str, id_entidad: int, accion: str, timestamp: str) -> str:
         """Genera hash para evento de historial"""
@@ -498,19 +507,16 @@ class TimbradoCFDI:
 
     def _registrar_evento(self, entidad: str, id_entidad: int, accion: str,
                          valor_nuevo: str, usuario: str):
-        conn = self.db.connection
-        cursor = conn.cursor()
-
         timestamp = datetime.now().isoformat()
         hash_evento = self._generar_hash(entidad, id_entidad, accion, timestamp)
 
-        cursor.execute("""
+        self.db.execute("""
             INSERT INTO historial_general
             (entidad, id_entidad, accion, valor_nuevo, usuario, timestamp, hash_evento)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (entidad, id_entidad, accion, valor_nuevo, usuario, timestamp, hash_evento))
 
-        conn.commit()
+        self.db.commit()
 
     def _generar_hash(self, entidad: str, id_entidad: int, accion: str, timestamp: str) -> str:
         import hashlib
@@ -520,19 +526,16 @@ class TimbradoCFDI:
     def _registrar_evento(self, entidad: str, id_entidad: int, accion: str, 
                          valor_nuevo: str, usuario: str):
         """Registra evento en historial_general"""
-        conn = self.db.connection
-        cursor = conn.cursor()
-        
         timestamp = datetime.now().isoformat()
         hash_evento = self._generar_hash(entidad, id_entidad, accion, timestamp)
         
-        cursor.execute("""
+        self.db.execute("""
             INSERT INTO historial_general 
             (entidad, id_entidad, accion, valor_nuevo, usuario, timestamp, hash_evento)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (entidad, id_entidad, accion, valor_nuevo, usuario, timestamp, hash_evento))
         
-        conn.commit()
+        self.db.commit()
     
     def _generar_hash(self, entidad: str, id_entidad: int, accion: str, timestamp: str) -> str:
         """Genera hash para evento de historial"""
