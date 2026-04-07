@@ -9,6 +9,8 @@
 import streamlit as st
 import sqlite3
 import hashlib
+import json
+import requests
 from datetime import datetime, date
 import pandas as pd
 from pathlib import Path
@@ -30,6 +32,12 @@ sys.path.insert(0, str(BASE_DIR / "crm_exo_v2" / "core"))
 sys.path.insert(0, str(BASE_DIR / "crm_exo_v2" / "ui"))
 
 from db_runtime import get_legacy_app_backend, get_legacy_app_backend_status, get_sqlite_db_path
+from dynamiquote_bridge import (
+    DEFAULT_DYNAMIQUOTE_API_URL,
+    DEFAULT_PLAYBOOK_NAME,
+    DynamiQuoteError,
+    importar_cotizacion_desde_dynamiquote,
+)
 
 DB_PATH = get_sqlite_db_path(BASE_DIR)
 
@@ -80,13 +88,30 @@ ROI_BASELINE_HOURS = {
 
 PIPELINE_ETAPA_ORDEN = [
     "Calificación",
-    "Negociación",
     "Propuesta",
+    "Negociación",
     "Cierre",
     "Ganada",
     "Perdida",
     "Sin etapa",
 ]
+
+DEFAULT_DYNAMIQUOTE_ITEMS_JSON = """[
+    {
+        "sku": "LIC-001",
+        "description": "Licencia anual",
+        "quantity": 10,
+        "cost_unit": 100,
+        "price_unit": 150
+    },
+    {
+        "sku": "SERV-IMP",
+        "description": "Implementación",
+        "quantity": 1,
+        "cost_unit": 800,
+        "price_unit": 1200
+    }
+]"""
 
 
 def obtener_metricas_helper(con):
@@ -557,9 +582,6 @@ def inicializar_db():
     """Crea la base de datos si no existe"""
     if APP_DB_BACKEND != "sqlite":
         return
-
-    if DB_PATH.exists():
-        return
     
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(DB_PATH))
@@ -675,6 +697,20 @@ def inicializar_db():
         timestamp TEXT DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS cotizaciones_externas (
+        id_sync INTEGER PRIMARY KEY AUTOINCREMENT,
+        id_cotizacion INTEGER NOT NULL,
+        proveedor TEXT NOT NULL,
+        external_quote_id TEXT,
+        playbook TEXT,
+        api_url TEXT,
+        request_payload TEXT,
+        response_payload TEXT,
+        estado_sync TEXT DEFAULT 'importada',
+        fecha_sync TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (id_cotizacion) REFERENCES cotizaciones(id_cotizacion)
+    );
+
     CREATE TABLE IF NOT EXISTS pipeline_helper_oportunidad_snapshots (
         id_snapshot INTEGER PRIMARY KEY AUTOINCREMENT,
         id_oportunidad INTEGER NOT NULL,
@@ -698,6 +734,7 @@ def inicializar_db():
     CREATE INDEX IF NOT EXISTS idx_facturas_oc ON facturas(id_oc);
     CREATE INDEX IF NOT EXISTS idx_historial_entidad ON historial_general(entidad, id_entidad);
     CREATE INDEX IF NOT EXISTS idx_hash_origen ON hash_registros(tabla_origen, id_registro);
+    CREATE INDEX IF NOT EXISTS idx_cotizaciones_externas_cotizacion ON cotizaciones_externas(id_cotizacion);
     CREATE INDEX IF NOT EXISTS idx_helper_snapshot_oportunidad ON pipeline_helper_oportunidad_snapshots(id_oportunidad, fecha_snapshot);
     """)
     
@@ -731,6 +768,38 @@ def registrar_evento(con, entidad, id_entidad, accion, valor_nuevo, usuario="ui"
     """, (entidad, id_entidad, accion, valor_nuevo, usuario, ts, h))
     con.commit()
     return h
+
+
+def registrar_sync_cotizacion_externa(
+    con,
+    id_cotizacion,
+    proveedor,
+    api_url,
+    playbook,
+    request_payload,
+    response_payload,
+    external_quote_id=None,
+    estado_sync="importada",
+):
+    con.execute(
+        """
+        INSERT INTO cotizaciones_externas
+        (id_cotizacion, proveedor, external_quote_id, playbook, api_url,
+         request_payload, response_payload, estado_sync)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            id_cotizacion,
+            proveedor,
+            external_quote_id,
+            playbook,
+            api_url,
+            json.dumps(request_payload, ensure_ascii=False, sort_keys=True),
+            json.dumps(response_payload, ensure_ascii=False, sort_keys=True),
+            estado_sync,
+        ),
+    )
+    con.commit()
 
 
 def obtener_nodos_integracion_demo(con):
@@ -1370,14 +1439,15 @@ elif menu == "🏗️ N1: Identidad":
                 cur.execute("SELECT COUNT(*) as total FROM empresas WHERE LOWER(nombre) = LOWER(?)", (nombre,))
                 if cur.fetchone()["total"] > 0:
                     st.error(f"❌ Ya existe '{nombre}'")
+                    con.close()
                 else:
                     cur.execute("INSERT INTO empresas (nombre, rfc, sector, telefono, correo) VALUES (?, ?, ?, ?, ?)",
                                (nombre, rfc, sector, telefono, correo))
                     con.commit()
                     registrar_evento(con, "empresa", cur.lastrowid, "CREAR", f"Empresa: {nombre}")
+                    con.close()
                     st.success(f"✅ Empresa '{nombre}' creada")
                     st.rerun()
-                con.close()
         
         with col2:
             con = conectar()
@@ -1461,9 +1531,9 @@ elif menu == "🏗️ N1: Identidad":
                                (id_empresa, nombre_c, correo_c, telefono_c, puesto_c))
                     con.commit()
                     registrar_evento(con, "contacto", cur.lastrowid, "CREAR", f"Contacto: {nombre_c}")
+                    con.close()
                     st.success(f"✅ Contacto '{nombre_c}' creado")
                     st.rerun()
-                    con.close()
             
             with col2:
                 con = conectar()
@@ -1533,18 +1603,35 @@ elif menu == "🏗️ N1: Identidad":
             col1, col2 = st.columns([1, 1])
             
             with col1:
-                with st.form("form_prospecto"):
-                    emp_sel = st.selectbox("Empresa *", empresas_validas["nombre"].tolist())
-                    id_emp = int(empresas_validas[empresas_validas["nombre"]==emp_sel]["id_empresa"].iloc[0])
-                    
-                    con = conectar()
-                    contactos_emp = pd.read_sql("SELECT id_contacto, nombre, puesto FROM contactos WHERE id_empresa = ?", 
-                                               con, params=(id_emp,))
-                    con.close()
-                    
-                    if len(contactos_emp) > 0:
-                        cont_display = [f"{row['nombre']} ({row['puesto']})" if row['puesto'] else row['nombre'] 
-                                       for _, row in contactos_emp.iterrows()]
+                # Selector de empresa FUERA del form para que el selectbox de contacto se actualice al cambiar empresa
+                if "prospecto_empresa_nombre" not in st.session_state:
+                    st.session_state["prospecto_empresa_nombre"] = empresas_validas.iloc[0]["nombre"]
+                if st.session_state["prospecto_empresa_nombre"] not in empresas_validas["nombre"].tolist():
+                    st.session_state["prospecto_empresa_nombre"] = empresas_validas.iloc[0]["nombre"]
+
+                emp_sel = st.selectbox(
+                    "Empresa *",
+                    empresas_validas["nombre"].tolist(),
+                    key="prospecto_empresa_nombre",
+                )
+                id_emp = int(empresas_validas[empresas_validas["nombre"] == emp_sel]["id_empresa"].iloc[0])
+
+                con = conectar()
+                contactos_emp = pd.read_sql(
+                    "SELECT id_contacto, nombre, puesto FROM contactos WHERE id_empresa = ?",
+                    con, params=(id_emp,)
+                )
+                con.close()
+
+                if len(contactos_emp) == 0:
+                    st.warning("⚠️ Esta empresa no tiene contactos")
+                else:
+                    cont_display = [
+                        f"{row['nombre']} ({row['puesto']})" if row["puesto"] else row["nombre"]
+                        for _, row in contactos_emp.iterrows()
+                    ]
+                    with st.form("form_prospecto"):
+                        st.caption(f"Empresa seleccionada: {emp_sel}")
                         cont_sel = st.selectbox("Contacto *", cont_display)
                         id_cont = int(contactos_emp.iloc[cont_display.index(cont_sel)]["id_contacto"])
                         origen = st.text_input("Origen", placeholder="Campaña, Referencia, etc.")
@@ -1557,9 +1644,9 @@ elif menu == "🏗️ N1: Identidad":
                                        (id_emp, id_cont, origen))
                             con.commit()
                             registrar_evento(con, "prospecto", cur.lastrowid, "CREAR", f"Prospecto: {emp_sel}")
+                            con.close()
                             st.success(f"✅ Prospecto generado (ID: {cur.lastrowid})")
                             st.rerun()
-                            con.close()
             
             with col2:
                 con = conectar()
@@ -1587,14 +1674,14 @@ elif menu == "🏗️ N1: Identidad":
 
 elif menu == "💼 N2: Transacción":
     st.markdown('<div class="main-header">💼 Núcleo 2: Transacción</div>', unsafe_allow_html=True)
-    st.markdown("**Flujo:** Prospecto → Oportunidad → Cotización → Cliente")
+    st.markdown("⬆️ **Flujo:** Prospecto → Oportunidad → Cotización → Ganar oportunidad → Marcar OC recibida → Ir a N3 para registrar OC y Factura")
     
     tab1, tab2 = st.tabs(["🎯 Oportunidades", "💰 Cotizaciones"])
     
     # TAB: Oportunidades (REGLAS R2, R3, R4)
     with tab1:
         st.subheader("Gestión de Oportunidades")
-        st.info("🔒 **REGLAS:** R2 (solo desde prospectos) | R3 (conversión automática) | R4 (OC requerida)")
+        st.info("🔒 **REGLAS:** R2 (solo desde prospectos) | R3 (conversión automática a cliente al ganar) | R4 (marcar OC aquí es la pre-aprobación; el documento OC se registra en N3)")
         
         col1, col2 = st.columns([1, 1])
         
@@ -1625,19 +1712,24 @@ elif menu == "💼 N2: Transacción":
                     fecha_cierre = st.date_input("Fecha estimada cierre")
                     submit_op = st.form_submit_button("✅ Crear Oportunidad")
                     
-                    if submit_op and nombre_op and monto > 0:
-                        con = conectar()
-                        cur = con.cursor()
-                        cur.execute("""
-                            INSERT INTO oportunidades 
-                            (id_prospecto, nombre, etapa, probabilidad, monto_estimado, fecha_estimada_cierre)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        """, (id_pros, nombre_op, etapa, probabilidad, monto, fecha_cierre.isoformat()))
-                        con.commit()
-                        registrar_evento(con, "oportunidad", cur.lastrowid, "CREAR", f"Oportunidad: {nombre_op}")
-                        st.success(f"✅ Oportunidad '{nombre_op}' creada")
-                        st.rerun()
-                        con.close()
+                    if submit_op:
+                        if not nombre_op:
+                            st.error("❌ El nombre de oportunidad es obligatorio.")
+                        elif monto <= 0:
+                            st.error("❌ El monto estimado debe ser mayor a 0.")
+                        else:
+                            con = conectar()
+                            cur = con.cursor()
+                            cur.execute("""
+                                INSERT INTO oportunidades 
+                                (id_prospecto, nombre, etapa, probabilidad, monto_estimado, fecha_estimada_cierre)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                            """, (id_pros, nombre_op, etapa, probabilidad, monto, fecha_cierre.isoformat()))
+                            con.commit()
+                            registrar_evento(con, "oportunidad", cur.lastrowid, "CREAR", f"Oportunidad: {nombre_op}")
+                            con.close()
+                            st.success(f"✅ Oportunidad '{nombre_op}' creada")
+                            st.rerun()
         
         with col2:
             con = conectar()
@@ -1670,10 +1762,12 @@ elif menu == "💼 N2: Transacción":
                         con_bulk = conectar()
                         cur = con_bulk.cursor()
                         for id_oportunidad in ids:
-                            # Verificar si tiene cotizaciones
                             cur.execute("SELECT COUNT(*) as total FROM cotizaciones WHERE id_oportunidad = ?", (id_oportunidad,))
                             if cur.fetchone()["total"] > 0:
                                 raise Exception(f"Oportunidad ID {id_oportunidad} tiene cotizaciones asociadas")
+                            cur.execute("SELECT COUNT(*) as total FROM ordenes_compra WHERE id_oportunidad = ?", (id_oportunidad,))
+                            if cur.fetchone()["total"] > 0:
+                                raise Exception(f"Oportunidad ID {id_oportunidad} tiene OCs asociadas")
                             cur.execute("DELETE FROM oportunidades WHERE id_oportunidad = ?", (id_oportunidad,))
                             registrar_evento(con_bulk, "oportunidad", id_oportunidad, "ELIMINAR", "Eliminación masiva")
                         con_bulk.commit()
@@ -1692,48 +1786,75 @@ elif menu == "💼 N2: Transacción":
                 
                 # Acciones sobre oportunidades
                 st.divider()
-                st.markdown("**Acciones:**")
-                
-                opor_sel_id = st.number_input("ID Oportunidad", min_value=1, step=1)
-                
+                st.markdown("**Acciones sobre oportunidad:**")
+
+                # Construir opciones desde el dataframe ya cargado (evita que el usuario adivine IDs)
+                _odf = oportunidades_filtradas if UX_COMPONENTS_DISPONIBLES else oportunidades
+                _opor_opciones = {
+                    int(row["id_oportunidad"]): (
+                        f"#{row['id_oportunidad']} · {row['nombre']} · {row['etapa']} · {row['empresa']}"
+                    )
+                    for _, row in _odf.iterrows()
+                }
+                opor_sel_id = st.selectbox(
+                    "Selecciona oportunidad",
+                    list(_opor_opciones.keys()),
+                    format_func=lambda k: _opor_opciones[k],
+                    key="oportunidad_accion_sel",
+                )
+
                 col_a1, col_a2 = st.columns(2)
-                
+
                 with col_a1:
                     if st.button("🎉 Marcar como Ganada (REGLA R3)", width="stretch"):
                         con = conectar()
                         cur = con.cursor()
-                        # Actualizar oportunidad
-                        cur.execute("UPDATE oportunidades SET etapa='Ganada', probabilidad=100 WHERE id_oportunidad=?", 
-                                   (opor_sel_id,))
-                        # REGLA R3: Convertir prospecto a cliente
-                        cur.execute("""
-                            UPDATE prospectos SET es_cliente=1, fecha_conversion_cliente=? 
-                            WHERE id_prospecto = (SELECT id_prospecto FROM oportunidades WHERE id_oportunidad=?)
-                        """, (date.today().isoformat(), opor_sel_id))
-                        con.commit()
-                        registrar_evento(con, "oportunidad", opor_sel_id, "GANAR", "Oportunidad ganada → Cliente convertido")
-                        st.success("✅ Oportunidad ganada y prospecto convertido a cliente")
-                        st.rerun()
-                        con.close()
-                
+                        cur.execute("SELECT etapa FROM oportunidades WHERE id_oportunidad=?", (opor_sel_id,))
+                        row_act = cur.fetchone()
+                        if row_act is None:
+                            con.close()
+                            st.error(f"❌ No existe la oportunidad con ID {opor_sel_id}")
+                        elif row_act["etapa"] == "Ganada":
+                            con.close()
+                            st.warning("⚠️ Esta oportunidad ya está marcada como Ganada.")
+                        elif row_act["etapa"] == "Perdida":
+                            con.close()
+                            st.error("❌ No se puede reabrir una oportunidad Perdida.")
+                        else:
+                            cur.execute("UPDATE oportunidades SET etapa='Ganada', probabilidad=100 WHERE id_oportunidad=?",
+                                       (opor_sel_id,))
+                            # REGLA R3: Convertir prospecto a cliente
+                            cur.execute("""
+                                UPDATE prospectos SET es_cliente=1, fecha_conversion_cliente=?
+                                WHERE id_prospecto = (SELECT id_prospecto FROM oportunidades WHERE id_oportunidad=?)
+                            """, (date.today().isoformat(), opor_sel_id))
+                            con.commit()
+                            registrar_evento(con, "oportunidad", opor_sel_id, "GANAR", "Oportunidad ganada → Cliente convertido")
+                            con.close()
+                            st.success("✅ Oportunidad ganada y prospecto convertido a cliente")
+                            st.rerun()
+
                 with col_a2:
                     if st.button("📋 Marcar OC Recibida (REGLA R4)", width="stretch"):
                         try:
                             con = conectar()
                             cur = con.cursor()
-                            # Actualizar estado OC
-                            cur.execute("UPDATE oportunidades SET oc_recibida=1 WHERE id_oportunidad=?", (opor_sel_id,))
-                            con.commit()
-                            
-                            # Registrar evento en historial
-                            registrar_evento(con, "oportunidad", opor_sel_id, "OC_RECIBIDA", "OC marcada como recibida")
-                            
-                            st.success("✅ OC recibida marcada y evento registrado en historial")
-                            st.rerun()
+                            cur.execute("SELECT etapa, oc_recibida FROM oportunidades WHERE id_oportunidad=?", (opor_sel_id,))
+                            row_opor = cur.fetchone()
+                            if row_opor is None:
+                                raise ValueError(f"No existe la oportunidad con ID {opor_sel_id}")
+                            if row_opor["etapa"] != "Ganada":
+                                raise ValueError(f"Solo se puede marcar OC en oportunidades Ganadas (etapa actual: {row_opor['etapa']})")
+                            if row_opor["oc_recibida"] == 1:
+                                st.warning("⚠️ Esta oportunidad ya tiene OC marcada como recibida.")
+                            else:
+                                cur.execute("UPDATE oportunidades SET oc_recibida=1 WHERE id_oportunidad=?", (opor_sel_id,))
+                                con.commit()
+                                registrar_evento(con, "oportunidad", opor_sel_id, "OC_RECIBIDA", "OC marcada como recibida")
+                                st.success("✅ OC recibida marcada. Ve a N3: Facturación para registrar el documento.")
+                                st.rerun()
                         except Exception as e:
                             st.error(f"❌ Error al marcar OC: {str(e)}")
-                            import traceback
-                            traceback.print_exc(file=sys.stderr)
                         finally:
                             if 'con' in locals():
                                 con.close()
@@ -1743,10 +1864,10 @@ elif menu == "💼 N2: Transacción":
     # TAB: Cotizaciones
     with tab2:
         st.subheader("Gestión de Cotizaciones")
-        st.info("🔒 **Modos:** Mínimo (solo monto) | Genérico (catálogo) | Externo (importación)")
-        
+        st.info("🔒 **Modos:** Mínimo (solo monto) | Genérico (monto + descripción de ítems) | Externo (cálculo DynamiQuote)")
+
         col1, col2 = st.columns([1, 1])
-        
+
         with col1:
             con = conectar()
             opor_para_cot = pd.read_sql("""
@@ -1756,61 +1877,278 @@ elif menu == "💼 N2: Transacción":
                 ORDER BY o.fecha_creacion DESC
             """, con)
             con.close()
-            
+
             if len(opor_para_cot) == 0:
                 st.warning("⚠️ No hay oportunidades disponibles")
             else:
+                if "cotizacion_items_dynamiquote_json" not in st.session_state:
+                    st.session_state["cotizacion_items_dynamiquote_json"] = DEFAULT_DYNAMIQUOTE_ITEMS_JSON
+                if "cotizacion_oportunidad_id" not in st.session_state:
+                    st.session_state["cotizacion_oportunidad_id"] = int(opor_para_cot.iloc[0]["id_oportunidad"])
+
+                opciones_oportunidad = [int(row["id_oportunidad"]) for _, row in opor_para_cot.iterrows()]
+                if st.session_state["cotizacion_oportunidad_id"] not in opciones_oportunidad:
+                    st.session_state["cotizacion_oportunidad_id"] = opciones_oportunidad[0]
+
+                oportunidades_por_id = {
+                    int(row["id_oportunidad"]): {
+                        "nombre": row["nombre"],
+                        "etapa": row["etapa"],
+                        "monto": row["monto"],
+                    }
+                    for _, row in opor_para_cot.iterrows()
+                }
+
+                id_opor = st.selectbox(
+                    "Oportunidad relacionada *",
+                    opciones_oportunidad,
+                    key="cotizacion_oportunidad_id",
+                    format_func=lambda op_id: (
+                        f"#{op_id} · {oportunidades_por_id[op_id]['nombre']} · "
+                        f"{oportunidades_por_id[op_id]['etapa']} · ${oportunidades_por_id[op_id]['monto']}"
+                    ),
+                    help="La cotización se guardará enlazada a esta oportunidad.",
+                )
+                oportunidad_seleccionada = oportunidades_por_id[id_opor]
+                st.caption(
+                    f"Cotización vinculada a oportunidad #{id_opor}: {oportunidad_seleccionada['nombre']} | "
+                    f"Etapa: {oportunidad_seleccionada['etapa']} | Monto estimado: ${oportunidad_seleccionada['monto']}"
+                )
+                if oportunidad_seleccionada["etapa"] == "Ganada":
+                    st.warning(
+                        "⚠️ Esta oportunidad ya está **Ganada**. "
+                        "Normalmente las cotizaciones se generan antes del cierre. "
+                        "Puedes continuar si necesitas una cotización complementaria o rectificatoria."
+                    )
+
+                mode_helps = {
+                    "minimo": "⚡ Monto total único, sin desglose de ítems.",
+                    "generico": "📋 Monto manual con descripción libre de ítems (texto).",
+                    "externo": "🔗 Cálculo automático vía DynamiQuote API (líneas con costo/precio).",
+                }
+                modo = st.selectbox(
+                    "Modo *",
+                    ["minimo", "generico", "externo"],
+                    key="cotizacion_modo_selector",
+                    help=mode_helps.get(st.session_state.get("cotizacion_modo_selector", "minimo"), ""),
+                )
+                st.caption(mode_helps[modo])
                 with st.form("form_cotizacion"):
-                    opor_display = [f"#{row['id_oportunidad']} - {row['nombre']} (${row['monto']})" 
-                                   for _, row in opor_para_cot.iterrows()]
-                    opor_sel = st.selectbox("Oportunidad *", opor_display)
-                    id_opor = int(opor_para_cot.iloc[opor_display.index(opor_sel)]["id_oportunidad"])
-                    
-                    modo = st.selectbox("Modo *", ["minimo", "generico", "externo"])
-                    monto_cot = st.number_input("Monto total *", min_value=0.0, step=100.0)
+                    st.caption(f"Oportunidad bloqueada para esta cotización: #{id_opor}")
+                    st.caption(f"Modo seleccionado: {modo}")
+                    dynamiquote_api_url = DEFAULT_DYNAMIQUOTE_API_URL
+                    playbook_name = DEFAULT_PLAYBOOK_NAME
+                    items_dynamiquote_json = ""
+                    items_genericos = ""
+                    if modo == "generico":
+                        st.caption("📋 Describe los ítems manualmente. El monto se captura abajo.")
+                        items_genericos = st.text_area(
+                            "Descripción de ítems",
+                            placeholder="Ej:\n- 10 licencias anuales $1,500 c/u\n- 1 implementación $8,000",
+                            height=120,
+                            help="Texto libre que se guarda en notas para trazabilidad.",
+                        )
+                    if modo == "externo":
+                        st.caption("DynamiQuote calcula el total desde líneas. El monto manual se desactiva en este modo.")
+                        dynamiquote_api_url = st.text_input(
+                            "DynamiQuote API URL",
+                            value=DEFAULT_DYNAMIQUOTE_API_URL,
+                            help="Ejemplo: http://127.0.0.1:8000",
+                        ).strip() or DEFAULT_DYNAMIQUOTE_API_URL
+                        playbook_name = st.selectbox(
+                            "Playbook DynamiQuote",
+                            ["General", "MSP", "Gobierno", "Penetracion"],
+                            index=0,
+                        )
+                        st.caption("Puedes editar el ejemplo precargado o reemplazarlo con tus líneas reales.")
+                        items_dynamiquote_json = st.text_area(
+                            "Items JSON *",
+                            height=220,
+                            value=st.session_state["cotizacion_items_dynamiquote_json"],
+                            key="cotizacion_items_dynamiquote_json",
+                            help="DynamiQuote consume quantity, cost_unit y price_unit. sku y description se guardan en la auditoría local.",
+                        )
+                    if modo == "externo":
+                        st.caption("💡 El monto será calculado por DynamiQuote al enviar.")
+                        monto_cot = 0.0
+                    else:
+                        monto_cot = st.number_input(
+                            "Monto total *",
+                            min_value=0.0,
+                            step=100.0,
+                        )
                     moneda = st.selectbox("Moneda", ["MXN", "USD", "EUR"])
                     notas = st.text_area("Notas", placeholder="Descripción de la cotización")
                     submit_cot = st.form_submit_button("✅ Crear Cotización")
                     
-                    if submit_cot and monto_cot > 0:
-                        import json
-                        # Generar hash de integridad
-                        data = {"id_oportunidad": id_opor, "modo": modo, "monto": monto_cot, "moneda": moneda}
-                        hash_int = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
-                        
-                        con = conectar()
-                        cur = con.cursor()
-                        cur.execute("""
-                            INSERT INTO cotizaciones 
-                            (id_oportunidad, modo, fuente, monto_total, moneda, estado, hash_integridad, notas)
-                            VALUES (?, ?, 'manual', ?, ?, 'Borrador', ?, ?)
-                        """, (id_opor, modo, monto_cot, moneda, hash_int, notas))
-                        con.commit()
-                        cot_id = cur.lastrowid
-                        # Registrar hash en tabla de trazabilidad
-                        cur.execute("INSERT INTO hash_registros (tabla_origen, id_registro, hash_sha256) VALUES ('cotizaciones', ?, ?)",
-                                   (cot_id, hash_int))
-                        con.commit()
-                        registrar_evento(con, "cotizacion", cot_id, "CREAR", f"Cotización modo {modo} - ${monto_cot} {moneda}")
-                        st.success(f"✅ Cotización creada con hash: {hash_int[:16]}...")
-                        st.rerun()
-                        con.close()
+                    if submit_cot:
+                        con = None
+                        try:
+                            fuente = "manual"
+                            monto_final = monto_cot
+                            notas_finales = notas
+                            resultado_externo = None
+
+                            if modo == "externo":
+                                resultado_externo = importar_cotizacion_desde_dynamiquote(
+                                    raw_items_json=items_dynamiquote_json,
+                                    playbook_name=playbook_name,
+                                    api_url=dynamiquote_api_url,
+                                )
+                                monto_final = resultado_externo["total_revenue"]
+                                fuente = "dynamiquote_api"
+                                resumen_externo = (
+                                    f"DynamiQuote | playbook={resultado_externo['playbook_name']} | "
+                                    f"lineas={resultado_externo['line_count']} | "
+                                    f"margen={resultado_externo['margin_pct']}% | "
+                                    f"health={resultado_externo['health_summary']}"
+                                )
+                                notas_finales = f"{notas}\n\n{resumen_externo}".strip()
+                            elif modo == "generico":
+                                if monto_cot <= 0:
+                                    raise ValueError("El monto total debe ser mayor a 0.")
+                                if items_genericos.strip():
+                                    notas_finales = f"{notas}\n\n--- Ítems ---\n{items_genericos}".strip()
+                            elif monto_cot <= 0:
+                                raise ValueError("El monto total debe ser mayor a 0.")
+
+                            data = {
+                                "id_oportunidad": id_opor,
+                                "modo": modo,
+                                "fuente": fuente,
+                                "monto": monto_final,
+                                "moneda": moneda,
+                                # Timestamp asegura unicidad del hash aunque los datos sean idénticos
+                                "ts": datetime.utcnow().isoformat(),
+                            }
+                            hash_int = hashlib.sha256(
+                                json.dumps(data, sort_keys=True, ensure_ascii=False).encode()
+                            ).hexdigest()
+
+                            con = conectar()
+                            cur = con.cursor()
+                            # Calcular versión: cuenta cotizaciones previas de esta oportunidad + 1
+                            cur.execute(
+                                "SELECT COUNT(*) as total FROM cotizaciones WHERE id_oportunidad = ?",
+                                (id_opor,),
+                            )
+                            version_cot = cur.fetchone()["total"] + 1
+                            cur.execute(
+                                """
+                                INSERT INTO cotizaciones
+                                (id_oportunidad, modo, fuente, monto_total, moneda, version, estado, hash_integridad, notas)
+                                VALUES (?, ?, ?, ?, ?, ?, 'Borrador', ?, ?)
+                                """,
+                                (id_opor, modo, fuente, monto_final, moneda, version_cot, hash_int, notas_finales),
+                            )
+                            con.commit()
+                            cot_id = cur.lastrowid
+                            cur.execute(
+                                "INSERT INTO hash_registros (tabla_origen, id_registro, hash_sha256) VALUES ('cotizaciones', ?, ?)",
+                                (cot_id, hash_int),
+                            )
+                            con.commit()
+
+                            if resultado_externo is not None:
+                                registrar_sync_cotizacion_externa(
+                                    con=con,
+                                    id_cotizacion=cot_id,
+                                    proveedor="DynamiQuote",
+                                    api_url=resultado_externo["api_url"],
+                                    playbook=resultado_externo["playbook_name"],
+                                    request_payload=resultado_externo["audit_payload"],
+                                    response_payload=resultado_externo["response_payload"],
+                                    external_quote_id=resultado_externo["external_quote_id"],
+                                )
+                                registrar_evento(
+                                    con,
+                                    "cotizacion",
+                                    cot_id,
+                                    "SYNC_DYNAMIQUOTE",
+                                    (
+                                        f"DynamiQuote importada | lineas={resultado_externo['line_count']} | "
+                                        f"total={resultado_externo['total_revenue']} {moneda} | "
+                                        f"health={resultado_externo['health_summary']}"
+                                    ),
+                                )
+                            else:
+                                registrar_evento(
+                                    con,
+                                    "cotizacion",
+                                    cot_id,
+                                    "CREAR",
+                                    f"Cotización modo {modo} - ${monto_final} {moneda}",
+                                )
+
+                            mensaje = f"✅ Cotización creada con hash: {hash_int[:16]}..."
+                            if resultado_externo is not None:
+                                mensaje += (
+                                    f" | DynamiQuote: {resultado_externo['line_count']} líneas, "
+                                    f"margen {resultado_externo['margin_pct']}%"
+                                )
+                            st.success(mensaje)
+                            st.rerun()
+                        except (ValueError, DynamiQuoteError, requests.RequestException) as exc:
+                            st.error(f"❌ No se pudo crear la cotización: {exc}")
+                        finally:
+                            if con is not None:
+                                con.close()
         
         with col2:
             con = conectar()
             cotizaciones = pd.read_sql("""
-                SELECT c.id_cotizacion, o.nombre as oportunidad, c.modo, 
-                       ROUND(c.monto_total, 2) as monto, c.moneda, c.estado, c.version,
-                       substr(c.hash_integridad, 1, 16) as hash
+                SELECT c.id_cotizacion, o.nombre as oportunidad, c.modo,
+                    COALESCE(
+                        (SELECT cx2.proveedor FROM cotizaciones_externas cx2
+                         WHERE cx2.id_cotizacion = c.id_cotizacion
+                         ORDER BY cx2.fecha_sync DESC LIMIT 1),
+                        c.fuente, 'manual'
+                    ) as fuente,
+                    ROUND(c.monto_total, 2) as monto, c.moneda,
+                    c.estado, c.version,
+                    substr(c.hash_integridad, 1, 16) as hash
                 FROM cotizaciones c
                 JOIN oportunidades o ON o.id_oportunidad = c.id_oportunidad
                 ORDER BY c.fecha_creacion DESC
-                LIMIT 10
+                LIMIT 20
             """, con)
             con.close()
-            
+
             if len(cotizaciones) > 0:
                 st.dataframe(cotizaciones, width="stretch", hide_index=True)
+                st.divider()
+                st.markdown("**Cambiar estado de cotización:**")
+                _cot_opciones = {
+                    int(row["id_cotizacion"]): (
+                        f"#{row['id_cotizacion']} · v{row['version']} · {row['oportunidad']} · "
+                        f"${row['monto']} {row['moneda']} · [{row['estado']}]"
+                    )
+                    for _, row in cotizaciones.iterrows()
+                }
+                _cot_sel_id = st.selectbox(
+                    "Cotización",
+                    list(_cot_opciones.keys()),
+                    format_func=lambda k: _cot_opciones[k],
+                    key="cotizacion_estado_sel",
+                )
+                _estados_cot = ["Borrador", "Enviada", "Aprobada", "Rechazada", "Vencida"]
+                _nuevo_estado = st.selectbox(
+                    "Nuevo estado",
+                    _estados_cot,
+                    key="cotizacion_estado_nuevo",
+                )
+                if st.button("✏️ Actualizar Estado", key="btn_actualizar_estado_cot"):
+                    con = conectar()
+                    cur = con.cursor()
+                    cur.execute(
+                        "UPDATE cotizaciones SET estado = ? WHERE id_cotizacion = ?",
+                        (_nuevo_estado, _cot_sel_id),
+                    )
+                    con.commit()
+                    registrar_evento(con, "cotizacion", _cot_sel_id, "ESTADO", f"Estado → {_nuevo_estado}")
+                    con.close()
+                    st.success(f"✅ Estado actualizado a '{_nuevo_estado}'")
+                    st.rerun()
             else:
                 st.info("No hay cotizaciones registradas")
 
@@ -1821,7 +2159,7 @@ elif menu == "💼 N2: Transacción":
 
 elif menu == "💰 N3: Facturación":
     st.markdown('<div class="main-header">💰 Núcleo 3: Facturación</div>', unsafe_allow_html=True)
-    st.markdown("**Flujo:** Oportunidad Ganada → OC → Factura CFDI")
+    st.markdown("⬆️ **Flujo:** Oportunidad Ganada + OC marcada (N2) → Registrar OC → Registrar Factura")
     
     # Widget de estado CFDI al inicio
     if CFDI_DISPONIBLE:
@@ -1879,9 +2217,9 @@ elif menu == "💰 N3: Facturación":
                         """, (id_opor, numero_oc, fecha_oc.isoformat(), monto_oc, moneda_oc))
                         con.commit()
                         registrar_evento(con, "orden_compra", cur.lastrowid, "CREAR", f"OC {numero_oc} - ${monto_oc} {moneda_oc}")
+                        con.close()
                         st.success(f"✅ OC '{numero_oc}' registrada")
                         st.rerun()
-                        con.close()
         
         with col2:
             con = conectar()
@@ -1967,7 +2305,6 @@ elif menu == "💰 N3: Facturación":
                     submit_fact = st.form_submit_button("✅ Registrar Factura")
                     
                     if submit_fact and uuid and monto_fact > 0:
-                        import json
                         # Hash forense de la factura
                         data_fact = {"uuid": uuid, "serie": serie, "folio": folio, 
                                     "fecha": fecha_emision.isoformat(), "monto": monto_fact}
@@ -1986,9 +2323,9 @@ elif menu == "💰 N3: Facturación":
                                    (fact_id, hash_fact))
                         con.commit()
                         registrar_evento(con, "factura", fact_id, "CREAR", f"Factura {serie}-{folio} UUID:{uuid[:16]}...")
+                        con.close()
                         st.success(f"✅ Factura creada con hash: {hash_fact[:16]}...")
                         st.rerun()
-                        con.close()
         
         with col2:
             con = conectar()

@@ -67,6 +67,14 @@ streamlit run app_crm_exo_v2.py
 DATABASE_URL = "postgresql://user:password@host:5432/database"
 ```
 
+### DynamiQuote (Modo externo de cotización)
+```bash
+export DYNAMIQUOTE_API_URL="http://127.0.0.1:8000"
+python -m streamlit run app_crm_exo_v2.py --server.headless true
+```
+
+En N2 → Cotizaciones, el modo externo puede enviar líneas a DynamiQuote, recuperar el total calculado y guardar la traza de sincronización en el CRM.
+
 **El sistema auto-detecta y adapta todo automáticamente.**
 
 📖 **Guía completa:** [docs/MIGRACION_SQLITE_POSTGRES.md](docs/MIGRACION_SQLITE_POSTGRES.md)
