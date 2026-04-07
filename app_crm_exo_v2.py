@@ -1652,18 +1652,23 @@ elif menu == "🏗️ N1: Identidad":
                 con = conectar()
                 prospectos = pd.read_sql("""
                     SELECT p.id_prospecto, e.nombre as empresa, c.nombre as contacto,
-                           p.estado, p.origen, p.fecha_creacion
+                           p.estado, p.origen, p.es_cliente, p.fecha_creacion
                     FROM prospectos p
                     JOIN empresas e ON e.id_empresa = p.id_empresa
                     JOIN contactos c ON c.id_contacto = p.id_contacto
-                    WHERE p.es_cliente = 0
-                    ORDER BY p.fecha_creacion DESC
-                    LIMIT 10
+                    ORDER BY p.es_cliente ASC, p.fecha_creacion DESC
+                    LIMIT 20
                 """, con)
                 con.close()
                 
                 if len(prospectos) > 0:
-                    st.dataframe(prospectos, width="stretch", hide_index=True)
+                    def _badge(row):
+                        return "🏢 Cliente" if row["es_cliente"] == 1 else "🔵 Prospecto"
+                    prospectos["tipo"] = prospectos.apply(_badge, axis=1)
+                    st.dataframe(
+                        prospectos.drop(columns=["es_cliente"]).rename(columns={"tipo": "Tipo"}),
+                        width="stretch", hide_index=True
+                    )
                 else:
                     st.info("No hay prospectos activos")
 
@@ -2178,61 +2183,113 @@ elif menu == "💰 N3: Facturación":
         st.info("🔒 **REGLA R4:** OC es requisito para facturar")
         
         col1, col2 = st.columns([1, 1])
-        
+
         with col1:
             con = conectar()
+            # Incluye cotización aprobada como referencia y advierte si no hay ninguna
             opor_ganadas = pd.read_sql("""
                 SELECT o.id_oportunidad, o.nombre, ROUND(o.monto_estimado, 2) as monto,
-                       e.nombre as empresa
+                       e.nombre as empresa,
+                       COUNT(DISTINCT c.id_cotizacion) as total_cots,
+                       MAX(CASE WHEN c.estado = 'Aprobada' THEN c.monto_total END) as monto_cotizacion_aprobada,
+                       MAX(CASE WHEN c.estado = 'Aprobada' THEN c.moneda END) as moneda_cotizacion_aprobada
                 FROM oportunidades o
                 JOIN prospectos p ON p.id_prospecto = o.id_prospecto
                 JOIN empresas e ON e.id_empresa = p.id_empresa
+                LEFT JOIN cotizaciones c ON c.id_oportunidad = o.id_oportunidad
                 WHERE o.etapa = 'Ganada' AND o.oc_recibida = 1
                 AND o.id_oportunidad NOT IN (SELECT id_oportunidad FROM ordenes_compra)
+                GROUP BY o.id_oportunidad, o.nombre, o.monto_estimado, e.nombre
                 ORDER BY o.fecha_creacion DESC
             """, con)
             con.close()
-            
+
             if len(opor_ganadas) == 0:
                 st.warning("⚠️ No hay oportunidades ganadas con OC pendientes de registrar")
+                st.caption("Pasos necesarios: N2 → Marcar como Ganada → Marcar OC Recibida")
             else:
+                # Selector de oportunidad fuera del form para mostrar contexto dinámico
+                if "oc_opor_sel_id" not in st.session_state:
+                    st.session_state["oc_opor_sel_id"] = int(opor_ganadas.iloc[0]["id_oportunidad"])
+                opor_ids = [int(r["id_oportunidad"]) for _, r in opor_ganadas.iterrows()]
+                opor_map = {
+                    int(r["id_oportunidad"]): r for _, r in opor_ganadas.iterrows()
+                }
+                if st.session_state["oc_opor_sel_id"] not in opor_ids:
+                    st.session_state["oc_opor_sel_id"] = opor_ids[0]
+
+                id_opor = st.selectbox(
+                    "Oportunidad *",
+                    opor_ids,
+                    format_func=lambda k: f"#{k} · {opor_map[k]['nombre']} · {opor_map[k]['empresa']} · ${opor_map[k]['monto']}",
+                    key="oc_opor_sel_id",
+                )
+                opor_ctx = opor_map[id_opor]
+
+                # Contexto comercial de la oportunidad seleccionada
+                if opor_ctx["total_cots"] == 0:
+                    st.warning("⚠️ Esta oportunidad no tiene cotizaciones. Se recomienda generar una antes de registrar OC.")
+                elif opor_ctx["monto_cotizacion_aprobada"] is None:
+                    st.info(f"ℹ️ Hay {int(opor_ctx['total_cots'])} cotización(es) pero ninguna está aprobada. Considera aprobar la cotización desde N2.")
+                else:
+                    st.success(
+                        f"✅ Cotización aprobada: ${opor_ctx['monto_cotizacion_aprobada']:,.2f} {opor_ctx['moneda_cotizacion_aprobada']}"
+                    )
+
                 with st.form("form_oc"):
-                    opor_display = [f"#{row['id_oportunidad']} - {row['nombre']} (${row['monto']}) - {row['empresa']}" 
-                                   for _, row in opor_ganadas.iterrows()]
-                    opor_sel = st.selectbox("Oportunidad *", opor_display)
-                    id_opor = int(opor_ganadas.iloc[opor_display.index(opor_sel)]["id_oportunidad"])
-                    
+                    st.caption(f"Registrando OC para: #{id_opor} — {opor_ctx['nombre']}")
                     numero_oc = st.text_input("Número de OC *", placeholder="OC-2025-001")
                     fecha_oc = st.date_input("Fecha OC *")
-                    monto_oc = st.number_input("Monto OC *", min_value=0.0, step=100.0)
-                    moneda_oc = st.selectbox("Moneda", ["MXN", "USD", "EUR"])
+                    # Precargar monto desde cotización aprobada si existe
+                    monto_default = float(opor_ctx["monto_cotizacion_aprobada"]) if opor_ctx["monto_cotizacion_aprobada"] else 0.0
+                    monto_oc = st.number_input(
+                        "Monto OC *",
+                        min_value=0.01,
+                        value=monto_default if monto_default > 0 else 0.01,
+                        step=100.0,
+                        help="Precargado desde cotización aprobada. Ajusta si el cliente negoció diferente.",
+                    )
+                    moneda_oc = st.selectbox(
+                        "Moneda",
+                        ["MXN", "USD", "EUR"],
+                        index=["MXN", "USD", "EUR"].index(opor_ctx["moneda_cotizacion_aprobada"])
+                        if opor_ctx["moneda_cotizacion_aprobada"] in ["MXN", "USD", "EUR"] else 0,
+                    )
                     submit_oc = st.form_submit_button("✅ Registrar OC")
-                    
-                    if submit_oc and numero_oc and monto_oc > 0:
-                        con = conectar()
-                        cur = con.cursor()
-                        cur.execute("""
-                            INSERT INTO ordenes_compra (id_oportunidad, numero_oc, fecha_oc, monto_oc, moneda)
-                            VALUES (?, ?, ?, ?, ?)
-                        """, (id_opor, numero_oc, fecha_oc.isoformat(), monto_oc, moneda_oc))
-                        con.commit()
-                        registrar_evento(con, "orden_compra", cur.lastrowid, "CREAR", f"OC {numero_oc} - ${monto_oc} {moneda_oc}")
-                        con.close()
-                        st.success(f"✅ OC '{numero_oc}' registrada")
-                        st.rerun()
-        
+
+                    if submit_oc:
+                        if not numero_oc:
+                            st.error("❌ El número de OC es obligatorio.")
+                        elif monto_oc <= 0:
+                            st.error("❌ El monto de la OC debe ser mayor a 0.")
+                        else:
+                            con = conectar()
+                            cur = con.cursor()
+                            cur.execute("""
+                                INSERT INTO ordenes_compra (id_oportunidad, numero_oc, fecha_oc, monto_oc, moneda)
+                                VALUES (?, ?, ?, ?, ?)
+                            """, (id_opor, numero_oc, fecha_oc.isoformat(), monto_oc, moneda_oc))
+                            con.commit()
+                            registrar_evento(con, "orden_compra", cur.lastrowid, "CREAR", f"OC {numero_oc} - ${monto_oc} {moneda_oc}")
+                            con.close()
+                            st.success(f"✅ OC '{numero_oc}' registrada por ${monto_oc:,.2f} {moneda_oc}")
+                            st.rerun()
+
         with col2:
             con = conectar()
             ocs = pd.read_sql("""
-                SELECT oc.id_oc, oc.numero_oc, oc.fecha_oc, ROUND(oc.monto_oc, 2) as monto,
-                       oc.moneda, o.nombre as oportunidad
+                SELECT oc.id_oc, oc.numero_oc, oc.fecha_oc,
+                       ROUND(oc.monto_oc, 2) as monto, oc.moneda,
+                       o.nombre as oportunidad,
+                       CASE WHEN f.id_factura IS NOT NULL THEN '✅ Facturada' ELSE '⏳ Pendiente' END as estado_factura
                 FROM ordenes_compra oc
                 JOIN oportunidades o ON o.id_oportunidad = oc.id_oportunidad
+                LEFT JOIN facturas f ON f.id_oc = oc.id_oc
                 ORDER BY oc.fecha_oc DESC
                 LIMIT 10
             """, con)
             con.close()
-            
+
             if len(ocs) > 0:
                 st.dataframe(ocs, width="stretch", hide_index=True)
             else:
@@ -2265,17 +2322,19 @@ elif menu == "💰 N3: Facturación":
                 st.caption("💡 Mientras tanto, puedes registrar facturas manualmente ingresando el UUID.")
         
         col1, col2 = st.columns([1, 1])
-        
+
         with col1:
             con = conectar()
             ocs_sin_factura = pd.read_sql("""
-                SELECT oc.id_oc, oc.numero_oc, ROUND(oc.monto_oc, 2) as monto, oc.moneda
+                SELECT oc.id_oc, oc.numero_oc, ROUND(oc.monto_oc, 2) as monto,
+                       oc.moneda, o.nombre as oportunidad
                 FROM ordenes_compra oc
+                JOIN oportunidades o ON o.id_oportunidad = oc.id_oportunidad
                 WHERE oc.id_oc NOT IN (SELECT id_oc FROM facturas)
                 ORDER BY oc.fecha_oc DESC
             """, con)
             con.close()
-            
+
             if len(ocs_sin_factura) == 0:
                 st.warning("⚠️ No hay OCs pendientes de facturar")
             else:
@@ -2286,46 +2345,83 @@ elif menu == "💰 N3: Facturación":
                         st.success("✅ Emisor CFDI configurado - Timbrado disponible")
                         st.info("🚧 **Próximamente:** Timbrado automático CFDI 4.0")
                         st.caption("Por ahora, registra facturas manualmente con el UUID del PAC")
-                
+
+                # Selector OC fuera del form para mostrar contexto de monto
+                if "factura_oc_sel_id" not in st.session_state:
+                    st.session_state["factura_oc_sel_id"] = int(ocs_sin_factura.iloc[0]["id_oc"])
+                oc_ids = [int(r["id_oc"]) for _, r in ocs_sin_factura.iterrows()]
+                oc_map = {int(r["id_oc"]): r for _, r in ocs_sin_factura.iterrows()}
+                if st.session_state["factura_oc_sel_id"] not in oc_ids:
+                    st.session_state["factura_oc_sel_id"] = oc_ids[0]
+
+                id_oc = st.selectbox(
+                    "Orden de Compra *",
+                    oc_ids,
+                    format_func=lambda k: f"OC #{k} · {oc_map[k]['numero_oc']} · ${oc_map[k]['monto']:,.2f} {oc_map[k]['moneda']} · {oc_map[k]['oportunidad']}",
+                    key="factura_oc_sel_id",
+                )
+                oc_ctx = oc_map[id_oc]
+                st.caption(
+                    f"Monto OC de referencia: **${oc_ctx['monto']:,.2f} {oc_ctx['moneda']}**. "
+                    "El monto de la factura no debería exceder este valor."
+                )
+
                 with st.form("form_factura"):
                     st.markdown("### 📝 Registro Manual de Factura")
                     st.caption("Ingresa los datos de la factura ya timbrada en tu PAC")
-                    
-                    oc_display = [f"OC #{row['id_oc']} - {row['numero_oc']} (${row['monto']} {row['moneda']})" 
-                                 for _, row in ocs_sin_factura.iterrows()]
-                    oc_sel = st.selectbox("Orden de Compra *", oc_display)
-                    id_oc = int(ocs_sin_factura.iloc[oc_display.index(oc_sel)]["id_oc"])
-                    
+
                     uuid = st.text_input("UUID CFDI *", placeholder="A1B2C3D4-...")
                     serie = st.text_input("Serie", placeholder="A")
                     folio = st.text_input("Folio", placeholder="12345")
                     fecha_emision = st.date_input("Fecha emisión *")
-                    monto_fact = st.number_input("Monto total *", min_value=0.0, step=100.0)
-                    moneda_fact = st.selectbox("Moneda", ["MXN", "USD", "EUR"])
+                    monto_fact = st.number_input(
+                        "Monto total *",
+                        min_value=0.01,
+                        value=float(oc_ctx["monto"]),
+                        step=100.0,
+                        help="Debe coincidir con el monto timbrado por el PAC.",
+                    )
+                    moneda_fact = st.selectbox(
+                        "Moneda",
+                        ["MXN", "USD", "EUR"],
+                        index=["MXN", "USD", "EUR"].index(oc_ctx["moneda"])
+                        if oc_ctx["moneda"] in ["MXN", "USD", "EUR"] else 0,
+                    )
                     submit_fact = st.form_submit_button("✅ Registrar Factura")
-                    
-                    if submit_fact and uuid and monto_fact > 0:
-                        # Hash forense de la factura
-                        data_fact = {"uuid": uuid, "serie": serie, "folio": folio, 
-                                    "fecha": fecha_emision.isoformat(), "monto": monto_fact}
-                        hash_fact = hashlib.sha256(json.dumps(data_fact, sort_keys=True).encode()).hexdigest()
-                        
-                        con = conectar()
-                        cur = con.cursor()
-                        cur.execute("""
-                            INSERT INTO facturas (id_oc, uuid, serie, folio, fecha_emision, monto_total, moneda)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """, (id_oc, uuid, serie, folio, fecha_emision.isoformat(), monto_fact, moneda_fact))
-                        con.commit()
-                        fact_id = cur.lastrowid
-                        # Registrar hash forense
-                        cur.execute("INSERT INTO hash_registros (tabla_origen, id_registro, hash_sha256) VALUES ('facturas', ?, ?)",
-                                   (fact_id, hash_fact))
-                        con.commit()
-                        registrar_evento(con, "factura", fact_id, "CREAR", f"Factura {serie}-{folio} UUID:{uuid[:16]}...")
-                        con.close()
-                        st.success(f"✅ Factura creada con hash: {hash_fact[:16]}...")
-                        st.rerun()
+
+                    if submit_fact:
+                        if not uuid:
+                            st.error("❌ El UUID CFDI es obligatorio.")
+                        elif monto_fact <= 0:
+                            st.error("❌ El monto debe ser mayor a 0.")
+                        elif monto_fact > float(oc_ctx["monto"]) * 1.10:
+                            # Tolerancia del 10% por IVA u otros ajustes
+                            st.warning(
+                                f"⚠️ El monto de la factura (${monto_fact:,.2f}) supera en más del 10% "
+                                f"el monto de la OC (${oc_ctx['monto']:,.2f}). Verifica antes de registrar."
+                            )
+                        else:
+                            data_fact = {"uuid": uuid, "serie": serie, "folio": folio,
+                                        "fecha": fecha_emision.isoformat(), "monto": monto_fact}
+                            hash_fact = hashlib.sha256(json.dumps(data_fact, sort_keys=True).encode()).hexdigest()
+
+                            con = conectar()
+                            cur = con.cursor()
+                            cur.execute("""
+                                INSERT INTO facturas (id_oc, uuid, serie, folio, fecha_emision, monto_total, moneda)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """, (id_oc, uuid, serie, folio, fecha_emision.isoformat(), monto_fact, moneda_fact))
+                            con.commit()
+                            fact_id = cur.lastrowid
+                            cur.execute(
+                                "INSERT INTO hash_registros (tabla_origen, id_registro, hash_sha256) VALUES ('facturas', ?, ?)",
+                                (fact_id, hash_fact),
+                            )
+                            con.commit()
+                            registrar_evento(con, "factura", fact_id, "CREAR", f"Factura {serie}-{folio} UUID:{uuid[:16]}...")
+                            con.close()
+                            st.success(f"✅ Factura creada con hash: {hash_fact[:16]}...")
+                            st.rerun()
         
         with col2:
             con = conectar()
@@ -2377,7 +2473,8 @@ elif menu == "🪶 N4: Trazabilidad":
         
         with col_f2:
             filtro_accion = st.selectbox("Filtrar por acción",
-                                        ["Todas", "CREAR", "ACTUALIZAR", "GANAR", "OC_RECIBIDA"])
+                                        ["Todas", "CREAR", "ACTUALIZAR", "ELIMINAR",
+                                         "GANAR", "OC_RECIBIDA", "ESTADO", "SYNC_DYNAMIQUOTE"])
         
         with col_f3:
             limite = st.number_input("Límite de registros", min_value=10, max_value=100, value=50, step=10)
