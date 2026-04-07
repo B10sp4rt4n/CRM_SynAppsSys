@@ -1693,25 +1693,29 @@ elif menu == "💼 N2: Transacción":
         with col1:
             con = conectar()
             prospectos_disp = pd.read_sql("""
-                SELECT p.id_prospecto, e.nombre as empresa, c.nombre as contacto
+                SELECT p.id_prospecto, e.nombre as empresa, c.nombre as contacto,
+                       p.es_cliente
                 FROM prospectos p
                 JOIN empresas e ON e.id_empresa = p.id_empresa
                 JOIN contactos c ON c.id_contacto = p.id_contacto
-                WHERE p.es_cliente = 0 AND p.estado = 'Activo'
-                ORDER BY p.fecha_creacion DESC
+                WHERE p.estado = 'Activo'
+                ORDER BY p.es_cliente ASC, p.fecha_creacion DESC
             """, con)
             con.close()
             
             if len(prospectos_disp) == 0:
-                st.warning("⚠️ No hay prospectos activos. Crea uno en N1: Identidad")
+                st.warning("⚠️ No hay prospectos ni clientes activos. Crea uno en N1: Identidad")
             else:
                 with st.form("form_oportunidad"):
-                    pros_display = [f"{row['empresa']} - {row['contacto']}" for _, row in prospectos_disp.iterrows()]
-                    pros_sel = st.selectbox("Prospecto *", pros_display)
+                    pros_display = [
+                        f"{'\U0001f3e2 ' if row['es_cliente'] else ''}{row['empresa']} - {row['contacto']}"
+                        for _, row in prospectos_disp.iterrows()
+                    ]
+                    pros_sel = st.selectbox("Empresa / Contacto *", pros_display)
                     id_pros = int(prospectos_disp.iloc[pros_display.index(pros_sel)]["id_prospecto"])
                     
                     nombre_op = st.text_input("Nombre de oportunidad *", placeholder="Venta de software CRM")
-                    monto = st.number_input("Monto estimado *", min_value=0.0, step=1000.0)
+                    monto = st.number_input("Monto estimado *", min_value=0.01, step=1000.0)
                     etapa = st.selectbox("Etapa", ["Calificación", "Propuesta", "Negociación", "Cierre"])
                     probabilidad = st.slider("Probabilidad (%)", 0, 100, 25, 5)
                     fecha_cierre = st.date_input("Fecha estimada cierre")
@@ -1808,7 +1812,7 @@ elif menu == "💼 N2: Transacción":
                     key="oportunidad_accion_sel",
                 )
 
-                col_a1, col_a2 = st.columns(2)
+                col_a1, col_a2, col_a3 = st.columns(3)
 
                 with col_a1:
                     if st.button("🎉 Marcar como Ganada (REGLA R3)", width="stretch"):
@@ -1863,6 +1867,30 @@ elif menu == "💼 N2: Transacción":
                         finally:
                             if 'con' in locals():
                                 con.close()
+
+                with col_a3:
+                    if st.button("❌ Marcar como Perdida", width="stretch"):
+                        con = conectar()
+                        cur = con.cursor()
+                        cur.execute("SELECT etapa FROM oportunidades WHERE id_oportunidad=?", (opor_sel_id,))
+                        row_act = cur.fetchone()
+                        if row_act is None:
+                            con.close()
+                            st.error(f"❌ No existe la oportunidad con ID {opor_sel_id}")
+                        elif row_act["etapa"] == "Perdida":
+                            con.close()
+                            st.warning("⚠️ Esta oportunidad ya está marcada como Perdida.")
+                        elif row_act["etapa"] == "Ganada":
+                            con.close()
+                            st.error("❌ No se puede marcar como Perdida una oportunidad ya Ganada.")
+                        else:
+                            cur.execute("UPDATE oportunidades SET etapa='Perdida', probabilidad=0 WHERE id_oportunidad=?",
+                                       (opor_sel_id,))
+                            con.commit()
+                            registrar_evento(con, "oportunidad", opor_sel_id, "ACTUALIZAR", "Oportunidad marcada como Perdida")
+                            con.close()
+                            st.success("❌ Oportunidad marcada como Perdida")
+                            st.rerun()
             else:
                 st.info("No hay oportunidades registradas")
     
@@ -2192,13 +2220,14 @@ elif menu == "💰 N3: Facturación":
                        e.nombre as empresa,
                        COUNT(DISTINCT c.id_cotizacion) as total_cots,
                        MAX(CASE WHEN c.estado = 'Aprobada' THEN c.monto_total END) as monto_cotizacion_aprobada,
-                       MAX(CASE WHEN c.estado = 'Aprobada' THEN c.moneda END) as moneda_cotizacion_aprobada
+                       MAX(CASE WHEN c.estado = 'Aprobada' THEN c.moneda END) as moneda_cotizacion_aprobada,
+                       COUNT(DISTINCT oc.id_oc) as ocs_existentes
                 FROM oportunidades o
                 JOIN prospectos p ON p.id_prospecto = o.id_prospecto
                 JOIN empresas e ON e.id_empresa = p.id_empresa
                 LEFT JOIN cotizaciones c ON c.id_oportunidad = o.id_oportunidad
+                LEFT JOIN ordenes_compra oc ON oc.id_oportunidad = o.id_oportunidad
                 WHERE o.etapa = 'Ganada' AND o.oc_recibida = 1
-                AND o.id_oportunidad NOT IN (SELECT id_oportunidad FROM ordenes_compra)
                 GROUP BY o.id_oportunidad, o.nombre, o.monto_estimado, e.nombre
                 ORDER BY o.fecha_creacion DESC
             """, con)
@@ -2221,7 +2250,10 @@ elif menu == "💰 N3: Facturación":
                 id_opor = st.selectbox(
                     "Oportunidad *",
                     opor_ids,
-                    format_func=lambda k: f"#{k} · {opor_map[k]['nombre']} · {opor_map[k]['empresa']} · ${opor_map[k]['monto']}",
+                    format_func=lambda k: (
+                        f"#{k} · {opor_map[k]['nombre']} · {opor_map[k]['empresa']} · ${opor_map[k]['monto']}"
+                        + (f" · {int(opor_map[k]['ocs_existentes'])} OC(s) registrada(s)" if int(opor_map[k]['ocs_existentes']) > 0 else "")
+                    ),
                     key="oc_opor_sel_id",
                 )
                 opor_ctx = opor_map[id_opor]
@@ -2327,16 +2359,18 @@ elif menu == "💰 N3: Facturación":
             con = conectar()
             ocs_sin_factura = pd.read_sql("""
                 SELECT oc.id_oc, oc.numero_oc, ROUND(oc.monto_oc, 2) as monto,
-                       oc.moneda, o.nombre as oportunidad
+                       oc.moneda, o.nombre as oportunidad,
+                       COUNT(f.id_factura) as facturas_existentes
                 FROM ordenes_compra oc
                 JOIN oportunidades o ON o.id_oportunidad = oc.id_oportunidad
-                WHERE oc.id_oc NOT IN (SELECT id_oc FROM facturas)
+                LEFT JOIN facturas f ON f.id_oc = oc.id_oc
+                GROUP BY oc.id_oc, oc.numero_oc, oc.monto_oc, oc.moneda, o.nombre
                 ORDER BY oc.fecha_oc DESC
             """, con)
             con.close()
 
             if len(ocs_sin_factura) == 0:
-                st.warning("⚠️ No hay OCs pendientes de facturar")
+                st.warning("⚠️ No hay OCs registradas")
             else:
                 # Mostrar opción de timbrado automático si CFDI está configurado
                 if CFDI_DISPONIBLE:
@@ -2357,7 +2391,10 @@ elif menu == "💰 N3: Facturación":
                 id_oc = st.selectbox(
                     "Orden de Compra *",
                     oc_ids,
-                    format_func=lambda k: f"OC #{k} · {oc_map[k]['numero_oc']} · ${oc_map[k]['monto']:,.2f} {oc_map[k]['moneda']} · {oc_map[k]['oportunidad']}",
+                    format_func=lambda k: (
+                        f"OC #{k} · {oc_map[k]['numero_oc']} · ${oc_map[k]['monto']:,.2f} {oc_map[k]['moneda']} · {oc_map[k]['oportunidad']}"
+                        + (f" · {int(oc_map[k]['facturas_existentes'])} factura(s)" if int(oc_map[k]['facturas_existentes']) > 0 else "")
+                    ),
                     key="factura_oc_sel_id",
                 )
                 oc_ctx = oc_map[id_oc]
@@ -2402,7 +2439,8 @@ elif menu == "💰 N3: Facturación":
                             )
                         else:
                             data_fact = {"uuid": uuid, "serie": serie, "folio": folio,
-                                        "fecha": fecha_emision.isoformat(), "monto": monto_fact}
+                                        "fecha": fecha_emision.isoformat(), "monto": monto_fact,
+                                        "ts": datetime.utcnow().isoformat()}
                             hash_fact = hashlib.sha256(json.dumps(data_fact, sort_keys=True).encode()).hexdigest()
 
                             con = conectar()
