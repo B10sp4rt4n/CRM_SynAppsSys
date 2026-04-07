@@ -726,6 +726,19 @@ def inicializar_db():
         FOREIGN KEY (id_oportunidad) REFERENCES oportunidades(id_oportunidad)
     );
 
+    CREATE TABLE IF NOT EXISTS pagos (
+        id_pago INTEGER PRIMARY KEY AUTOINCREMENT,
+        id_factura INTEGER NOT NULL,
+        fecha_pago TEXT NOT NULL,
+        monto_pagado REAL NOT NULL,
+        moneda TEXT DEFAULT 'MXN',
+        metodo_pago TEXT,
+        referencia TEXT,
+        notas TEXT,
+        fecha_registro TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (id_factura) REFERENCES facturas(id_factura)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_contactos_empresa ON contactos(id_empresa);
     CREATE INDEX IF NOT EXISTS idx_prospectos_empresa ON prospectos(id_empresa);
     CREATE INDEX IF NOT EXISTS idx_oportunidades_prospecto ON oportunidades(id_prospecto);
@@ -756,16 +769,24 @@ def conectar():
     return con
 
 
-def registrar_evento(con, entidad, id_entidad, accion, valor_nuevo, usuario="ui"):
-    """Registra evento con hash forense"""
+def get_usuario_activo() -> str:
+    """Devuelve el usuario activo de la sesión. Usa el nombre introducido en el sidebar;
+    si está vacío, retorna 'ui' como valor nulo seguro."""
+    import streamlit as _st
+    u = _st.session_state.get("crm_usuario_session", "").strip()
+    return u if u else "ui"
+
+
+def registrar_evento(con, entidad, id_entidad, accion, valor_nuevo, usuario="ui", valor_anterior=None):
+    """Registra evento con hash forense. valor_anterior captura el estado previo para auditoría completa."""
     ts = datetime.now().isoformat()
     raw = f"{entidad}|{accion}|{valor_nuevo}|{ts}"
     h = hashlib.sha256(raw.encode()).hexdigest()
     con.execute("""
         INSERT INTO historial_general
-        (entidad, id_entidad, accion, valor_nuevo, usuario, timestamp, hash_evento)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (entidad, id_entidad, accion, valor_nuevo, usuario, ts, h))
+        (entidad, id_entidad, accion, valor_anterior, valor_nuevo, usuario, timestamp, hash_evento)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (entidad, id_entidad, accion, valor_anterior, valor_nuevo, usuario, ts, h))
     con.commit()
     return h
 
@@ -996,12 +1017,13 @@ def obtener_cxc_integracion_demo(con):
             COALESCE(NULLIF(oc.numero_oc, ''), 'OC-' || oc.id_oc) AS numero_oc,
             f.fecha_emision,
             ROUND(COALESCE(f.monto_total, 0), 2) AS total_factura,
-            0.00 AS total_pagado,
-            ROUND(COALESCE(f.monto_total, 0), 2) AS saldo_pendiente,
+            ROUND(COALESCE(SUM(pg.monto_pagado), 0), 2) AS total_pagado,
+            ROUND(COALESCE(f.monto_total, 0) - COALESCE(SUM(pg.monto_pagado), 0), 2) AS saldo_pendiente,
             CASE
+                WHEN COALESCE(f.monto_total, 0) - COALESCE(SUM(pg.monto_pagado), 0) <= 0.005 THEN 'pagada'
                 WHEN julianday('now') - julianday(f.fecha_emision) > 60 THEN 'vencido_60+'
                 WHEN julianday('now') - julianday(f.fecha_emision) > 30 THEN 'vencido_30+'
-                ELSE 'sin_pagos_legacy'
+                ELSE 'pendiente'
             END AS estado_cobranza,
             CAST(julianday('now') - julianday(f.fecha_emision) AS INTEGER) AS antiguedad_dias
         FROM facturas f
@@ -1009,6 +1031,8 @@ def obtener_cxc_integracion_demo(con):
         JOIN oportunidades o ON o.id_oportunidad = oc.id_oportunidad
         JOIN prospectos p ON p.id_prospecto = o.id_prospecto
         JOIN empresas e ON e.id_empresa = p.id_empresa
+        LEFT JOIN pagos pg ON pg.id_factura = f.id_factura
+        GROUP BY f.id_factura, e.nombre, oc.numero_oc, f.fecha_emision, f.monto_total
         ORDER BY f.fecha_emision DESC, f.id_factura DESC
     """, con)
 
@@ -1110,7 +1134,40 @@ def aplicar_migraciones():
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_helper_snapshot_oportunidad ON pipeline_helper_oportunidad_snapshots(id_oportunidad, fecha_snapshot)")
         con.commit()
-            
+
+        # ========== MIGRACIÓN: UNIQUE index en empresas.rfc (evita RFC duplicado) ==========
+        # SQLite no soporta ADD CONSTRAINT, se crea el índice único si no existe
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_empresas_rfc_unique
+            ON empresas(rfc) WHERE rfc IS NOT NULL AND rfc != ''
+        """)
+        con.commit()
+
+        # ========== MIGRACIÓN: UNIQUE index en facturas.uuid (un UUID solo une vez) ==========
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_facturas_uuid_unique
+            ON facturas(uuid) WHERE uuid IS NOT NULL AND uuid != ''
+        """)
+        con.commit()
+
+        # ========== MIGRACIÓN: tabla pagos (cobranza real) ==========
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS pagos (
+                id_pago INTEGER PRIMARY KEY AUTOINCREMENT,
+                id_factura INTEGER NOT NULL,
+                fecha_pago TEXT NOT NULL,
+                monto_pagado REAL NOT NULL,
+                moneda TEXT DEFAULT 'MXN',
+                metodo_pago TEXT,
+                referencia TEXT,
+                notas TEXT,
+                fecha_registro TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (id_factura) REFERENCES facturas(id_factura)
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_pagos_factura ON pagos(id_factura)")
+        con.commit()
+
     except Exception:
         # No hacemos fail-hard: registramos y seguimos (Streamlit ocultará detalles en producción)
         import traceback, sys
@@ -1203,8 +1260,9 @@ with st.sidebar:
                 st.success(f"🔐 CFDI: {config_emisor['rfc'][:6]}...")
             else:
                 st.warning("⚠️ CFDI no configurado")
-        except Exception:
-            pass
+        except Exception as _e_cfdi:
+            import sys
+            print(f"⚠️ [sidebar] Error al verificar CFDI: {_e_cfdi}", file=sys.stderr)
         st.divider()
     
     # Sistema de Notificaciones Inteligente (Nivel 2)
@@ -1230,6 +1288,16 @@ with st.sidebar:
     8. 📄 Factura
     9. 🪶 Trazabilidad
     """)
+
+    st.divider()
+    st.caption("👤 Usuario de sesión")
+    st.text_input(
+        "Tu nombre",
+        key="crm_usuario_session",
+        placeholder="ej. juan.perez",
+        help="Se registra en el historial de cambios. Opcional; si se deja vacío se usa 'ui'.",
+        label_visibility="collapsed",
+    )
 
 
 # ================================================================
@@ -1297,8 +1365,9 @@ if menu == "🏠 Dashboard":
         try:
             widget_estado_cfdi()
             st.divider()
-        except Exception:
-            pass  # Si falla el widget, no romper el dashboard
+        except Exception as _e_cfdi_widget:
+            import sys
+            print(f"⚠️ [dashboard] Error en widget CFDI: {_e_cfdi_widget}", file=sys.stderr)
     
     # Pipeline por etapa con visualización mejorada
     st.subheader("📊 Pipeline de Oportunidades")
@@ -1438,13 +1507,26 @@ elif menu == "🏗️ N1: Identidad":
                 cur = con.cursor()
                 cur.execute("SELECT COUNT(*) as total FROM empresas WHERE LOWER(nombre) = LOWER(?)", (nombre,))
                 if cur.fetchone()["total"] > 0:
-                    st.error(f"❌ Ya existe '{nombre}'")
+                    st.error(f"❌ Ya existe una empresa llamada '{nombre}'")
                     con.close()
+                elif rfc:
+                    cur.execute("SELECT COUNT(*) as total FROM empresas WHERE rfc = ? AND rfc != ''", (rfc.strip().upper(),))
+                    if cur.fetchone()["total"] > 0:
+                        st.error(f"❌ Ya existe una empresa con RFC '{rfc.strip().upper()}'")
+                        con.close()
+                    else:
+                        cur.execute("INSERT INTO empresas (nombre, rfc, sector, telefono, correo) VALUES (?, ?, ?, ?, ?)",
+                                   (nombre, rfc.strip().upper(), sector, telefono, correo))
+                        con.commit()
+                        registrar_evento(con, "empresa", cur.lastrowid, "CREAR", f"Empresa: {nombre}", usuario=get_usuario_activo())
+                        con.close()
+                        st.success(f"✅ Empresa '{nombre}' creada")
+                        st.rerun()
                 else:
                     cur.execute("INSERT INTO empresas (nombre, rfc, sector, telefono, correo) VALUES (?, ?, ?, ?, ?)",
                                (nombre, rfc, sector, telefono, correo))
                     con.commit()
-                    registrar_evento(con, "empresa", cur.lastrowid, "CREAR", f"Empresa: {nombre}")
+                    registrar_evento(con, "empresa", cur.lastrowid, "CREAR", f"Empresa: {nombre}", usuario=get_usuario_activo())
                     con.close()
                     st.success(f"✅ Empresa '{nombre}' creada")
                     st.rerun()
@@ -1484,7 +1566,7 @@ elif menu == "🏗️ N1: Identidad":
                             if cur.fetchone()["total"] > 0:
                                 raise Exception(f"Empresa ID {id_empresa} tiene contactos asociados")
                             cur.execute("DELETE FROM empresas WHERE id_empresa = ?", (id_empresa,))
-                            registrar_evento(con_bulk, "empresa", id_empresa, "ELIMINAR", "Eliminación masiva")
+                            registrar_evento(con_bulk, "empresa", id_empresa, "ELIMINAR", "Eliminación masiva", usuario=get_usuario_activo())
                         con_bulk.commit()
                         con_bulk.close()
                     
@@ -1530,7 +1612,7 @@ elif menu == "🏗️ N1: Identidad":
                     cur.execute("INSERT INTO contactos (id_empresa, nombre, correo, telefono, puesto) VALUES (?, ?, ?, ?, ?)",
                                (id_empresa, nombre_c, correo_c, telefono_c, puesto_c))
                     con.commit()
-                    registrar_evento(con, "contacto", cur.lastrowid, "CREAR", f"Contacto: {nombre_c}")
+                    registrar_evento(con, "contacto", cur.lastrowid, "CREAR", f"Contacto: {nombre_c}", usuario=get_usuario_activo())
                     con.close()
                     st.success(f"✅ Contacto '{nombre_c}' creado")
                     st.rerun()
@@ -1564,7 +1646,7 @@ elif menu == "🏗️ N1: Identidad":
                             cur = con_bulk.cursor()
                             for id_contacto in ids:
                                 cur.execute("DELETE FROM contactos WHERE id_contacto = ?", (id_contacto,))
-                                registrar_evento(con_bulk, "contacto", id_contacto, "ELIMINAR", "Eliminación masiva")
+                                registrar_evento(con_bulk, "contacto", id_contacto, "ELIMINAR", "Eliminación masiva", usuario=get_usuario_activo())
                             con_bulk.commit()
                             con_bulk.close()
                         
@@ -1654,13 +1736,18 @@ elif menu == "🏗️ N1: Identidad":
                                 cur.execute("INSERT INTO prospectos (id_empresa, id_contacto, origen, estado) VALUES (?, ?, ?, 'Activo')",
                                            (id_emp, id_cont, origen))
                                 con.commit()
-                                registrar_evento(con, "prospecto", cur.lastrowid, "CREAR", f"Prospecto: {emp_sel}")
+                                registrar_evento(con, "prospecto", cur.lastrowid, "CREAR", f"Prospecto: {emp_sel}", usuario=get_usuario_activo())
                                 con.close()
                                 st.success(f"✅ Prospecto generado (ID: {cur.lastrowid})")
                                 st.rerun()
             
             with col2:
                 con = conectar()
+                _total_pros = pd.read_sql("SELECT COUNT(*) as total FROM prospectos", con).iloc[0]["total"]
+                _pag_pros = st.number_input("Página", min_value=1,
+                                            max_value=max(1, (_total_pros - 1) // 20 + 1),
+                                            value=1, step=1, key="pag_prospectos")
+                _offset_pros = (_pag_pros - 1) * 20
                 prospectos = pd.read_sql("""
                     SELECT p.id_prospecto, e.nombre as empresa, c.nombre as contacto,
                            p.estado, p.origen, p.es_cliente, p.fecha_creacion
@@ -1668,9 +1755,10 @@ elif menu == "🏗️ N1: Identidad":
                     JOIN empresas e ON e.id_empresa = p.id_empresa
                     JOIN contactos c ON c.id_contacto = p.id_contacto
                     ORDER BY p.es_cliente ASC, p.fecha_creacion DESC
-                    LIMIT 20
-                """, con)
+                    LIMIT 20 OFFSET ?
+                """, con, params=(_offset_pros,))
                 con.close()
+                st.caption(f"Total: {_total_pros} registros · Página {_pag_pros}")
                 
                 if len(prospectos) > 0:
                     def _badge(row):
@@ -1746,7 +1834,7 @@ elif menu == "💼 N2: Transacción":
                                 VALUES (?, ?, ?, ?, ?, ?)
                             """, (id_pros, nombre_op, etapa, probabilidad, monto, fecha_cierre.isoformat()))
                             con.commit()
-                            registrar_evento(con, "oportunidad", cur.lastrowid, "CREAR", f"Oportunidad: {nombre_op}")
+                            registrar_evento(con, "oportunidad", cur.lastrowid, "CREAR", f"Oportunidad: {nombre_op}", usuario=get_usuario_activo())
                             con.close()
                             st.success(f"✅ Oportunidad '{nombre_op}' creada")
                             st.rerun()
@@ -1789,7 +1877,7 @@ elif menu == "💼 N2: Transacción":
                             if cur.fetchone()["total"] > 0:
                                 raise Exception(f"Oportunidad ID {id_oportunidad} tiene OCs asociadas")
                             cur.execute("DELETE FROM oportunidades WHERE id_oportunidad = ?", (id_oportunidad,))
-                            registrar_evento(con_bulk, "oportunidad", id_oportunidad, "ELIMINAR", "Eliminación masiva")
+                            registrar_evento(con_bulk, "oportunidad", id_oportunidad, "ELIMINAR", "Eliminación masiva", usuario=get_usuario_activo())
                         con_bulk.commit()
                         con_bulk.close()
                     
@@ -1841,6 +1929,7 @@ elif menu == "💼 N2: Transacción":
                             con.close()
                             st.error("❌ No se puede reabrir una oportunidad Perdida.")
                         else:
+                            etapa_anterior = row_act["etapa"]
                             cur.execute("UPDATE oportunidades SET etapa='Ganada', probabilidad=100 WHERE id_oportunidad=?",
                                        (opor_sel_id,))
                             # REGLA R3: Convertir prospecto a cliente
@@ -1849,7 +1938,10 @@ elif menu == "💼 N2: Transacción":
                                 WHERE id_prospecto = (SELECT id_prospecto FROM oportunidades WHERE id_oportunidad=?)
                             """, (date.today().isoformat(), opor_sel_id))
                             con.commit()
-                            registrar_evento(con, "oportunidad", opor_sel_id, "GANAR", "Oportunidad ganada → Cliente convertido")
+                            registrar_evento(con, "oportunidad", opor_sel_id, "GANAR",
+                                            "Oportunidad ganada → Cliente convertido",
+                                            valor_anterior=f"etapa={etapa_anterior}",
+                                            usuario=get_usuario_activo())
                             con.close()
                             st.success("✅ Oportunidad ganada y prospecto convertido a cliente")
                             st.rerun()
@@ -1870,7 +1962,7 @@ elif menu == "💼 N2: Transacción":
                             else:
                                 cur.execute("UPDATE oportunidades SET oc_recibida=1 WHERE id_oportunidad=?", (opor_sel_id,))
                                 con.commit()
-                                registrar_evento(con, "oportunidad", opor_sel_id, "OC_RECIBIDA", "OC marcada como recibida")
+                                registrar_evento(con, "oportunidad", opor_sel_id, "OC_RECIBIDA", "OC marcada como recibida", usuario=get_usuario_activo())
                                 st.success("✅ OC recibida marcada. Ve a N3: Facturación para registrar el documento.")
                                 st.rerun()
                         except Exception as e:
@@ -1895,10 +1987,14 @@ elif menu == "💼 N2: Transacción":
                             con.close()
                             st.error("❌ No se puede marcar como Perdida una oportunidad ya Ganada.")
                         else:
+                            etapa_anterior_p = row_act["etapa"]
                             cur.execute("UPDATE oportunidades SET etapa='Perdida', probabilidad=0 WHERE id_oportunidad=?",
                                        (opor_sel_id,))
                             con.commit()
-                            registrar_evento(con, "oportunidad", opor_sel_id, "ACTUALIZAR", "Oportunidad marcada como Perdida")
+                            registrar_evento(con, "oportunidad", opor_sel_id, "ACTUALIZAR",
+                                            "Oportunidad marcada como Perdida",
+                                            valor_anterior=f"etapa={etapa_anterior_p}",
+                                            usuario=get_usuario_activo())
                             con.close()
                             st.success("❌ Oportunidad marcada como Perdida")
                             st.rerun()
@@ -2114,6 +2210,7 @@ elif menu == "💼 N2: Transacción":
                                         f"total={resultado_externo['total_revenue']} {moneda} | "
                                         f"health={resultado_externo['health_summary']}"
                                     ),
+                                    usuario=get_usuario_activo(),
                                 )
                             else:
                                 registrar_evento(
@@ -2122,6 +2219,7 @@ elif menu == "💼 N2: Transacción":
                                     cot_id,
                                     "CREAR",
                                     f"Cotización modo {modo} - ${monto_final} {moneda}",
+                                    usuario=get_usuario_activo(),
                                 )
 
                             mensaje = f"✅ Cotización creada con hash: {hash_int[:16]}..."
@@ -2154,12 +2252,20 @@ elif menu == "💼 N2: Transacción":
                 FROM cotizaciones c
                 JOIN oportunidades o ON o.id_oportunidad = c.id_oportunidad
                 ORDER BY c.fecha_creacion DESC
-                LIMIT 20
             """, con)
             con.close()
 
+            _total_cots = len(cotizaciones)
+            _pag_size_cot = 15
+            _pag_cot = st.number_input("Página", min_value=1,
+                                       max_value=max(1, (_total_cots - 1) // _pag_size_cot + 1),
+                                       value=1, step=1, key="pag_cotizaciones")
+            _inicio_cot = (_pag_cot - 1) * _pag_size_cot
+            cotizaciones_pag = cotizaciones.iloc[_inicio_cot:_inicio_cot + _pag_size_cot]
+            st.caption(f"Total: {_total_cots} cotizaciones · Página {_pag_cot}")
+
             if len(cotizaciones) > 0:
-                st.dataframe(cotizaciones, width="stretch", hide_index=True)
+                st.dataframe(cotizaciones_pag, width="stretch", hide_index=True)
                 st.divider()
                 st.markdown("**Cambiar estado de cotización:**")
                 _cot_opciones = {
@@ -2184,12 +2290,18 @@ elif menu == "💼 N2: Transacción":
                 if st.button("✏️ Actualizar Estado", key="btn_actualizar_estado_cot"):
                     con = conectar()
                     cur = con.cursor()
+                    cur.execute("SELECT estado FROM cotizaciones WHERE id_cotizacion = ?", (_cot_sel_id,))
+                    _row_cot = cur.fetchone()
+                    _estado_anterior_cot = _row_cot["estado"] if _row_cot else None
                     cur.execute(
                         "UPDATE cotizaciones SET estado = ? WHERE id_cotizacion = ?",
                         (_nuevo_estado, _cot_sel_id),
                     )
                     con.commit()
-                    registrar_evento(con, "cotizacion", _cot_sel_id, "ESTADO", f"Estado → {_nuevo_estado}")
+                    registrar_evento(con, "cotizacion", _cot_sel_id, "ESTADO",
+                                    f"Estado → {_nuevo_estado}",
+                                    valor_anterior=f"Estado → {_estado_anterior_cot}",
+                                    usuario=get_usuario_activo())
                     con.close()
                     st.success(f"✅ Estado actualizado a '{_nuevo_estado}'")
                     st.rerun()
@@ -2211,10 +2323,11 @@ elif menu == "💰 N3: Facturación":
             st.divider()
             widget_estado_cfdi()
             st.divider()
-        except Exception:
-            pass
+        except Exception as _e_cfdi_n3:
+            import sys
+            print(f"⚠️ [N3] Error en widget CFDI: {_e_cfdi_n3}", file=sys.stderr)
     
-    tab1, tab2 = st.tabs(["🧾 Órdenes de Compra", "📄 Facturas"])
+    tab1, tab2, tab3 = st.tabs(["🧾 Órdenes de Compra", "📄 Facturas", "💳 Cobranza"])
     
     # TAB: Órdenes de Compra
     with tab1:
@@ -2322,7 +2435,7 @@ elif menu == "💰 N3: Facturación":
                                 (id_opor,)
                             )
                             con.commit()
-                            registrar_evento(con, "orden_compra", oc_id_nuevo, "CREAR", f"OC {numero_oc} - ${monto_oc} {moneda_oc}")
+                            registrar_evento(con, "orden_compra", oc_id_nuevo, "CREAR", f"OC {numero_oc} - ${monto_oc} {moneda_oc}", usuario=get_usuario_activo())
                             con.close()
                             st.success(f"✅ OC '{numero_oc}' registrada por ${monto_oc:,.2f} {moneda_oc}")
                             st.rerun()
@@ -2476,13 +2589,18 @@ elif menu == "💰 N3: Facturación":
                                 (fact_id, hash_fact),
                             )
                             con.commit()
-                            registrar_evento(con, "factura", fact_id, "CREAR", f"Factura {serie}-{folio} UUID:{uuid[:16]}...")
+                            registrar_evento(con, "factura", fact_id, "CREAR", f"Factura {serie}-{folio} UUID:{uuid[:16]}...", usuario=get_usuario_activo())
                             con.close()
                             st.success(f"✅ Factura creada con hash: {hash_fact[:16]}...")
                             st.rerun()
         
         with col2:
             con = conectar()
+            _total_facturas = pd.read_sql("SELECT COUNT(*) as total FROM facturas", con).iloc[0]["total"]
+            _pag_fact = st.number_input("Página", min_value=1,
+                                        max_value=max(1, (_total_facturas - 1) // 15 + 1),
+                                        value=1, step=1, key="pag_facturas")
+            _offset_fact = (_pag_fact - 1) * 15
             facturas = pd.read_sql("""
                 SELECT f.id_factura, f.uuid, f.serie, f.folio, f.fecha_emision,
                        ROUND(f.monto_total, 2) as monto, f.moneda,
@@ -2490,14 +2608,135 @@ elif menu == "💰 N3: Facturación":
                 FROM facturas f
                 JOIN ordenes_compra oc ON oc.id_oc = f.id_oc
                 ORDER BY f.fecha_emision DESC
-                LIMIT 10
-            """, con)
+                LIMIT 15 OFFSET ?
+            """, con, params=(_offset_fact,))
             con.close()
+            st.caption(f"Total: {_total_facturas} facturas · Página {_pag_fact}")
             
             if len(facturas) > 0:
                 st.dataframe(facturas, width="stretch", hide_index=True)
             else:
                 st.info("No hay facturas registradas")
+
+    # TAB: Cobranza
+    with tab3:
+        st.subheader("💳 Cobranza — Registro de Pagos")
+        st.info("Registra los pagos recibidos contra facturas emitidas. El saldo se calcula automáticamente.")
+
+        col1, col2 = st.columns([1, 1])
+
+        with col1:
+            con = conectar()
+            facturas_pendientes = pd.read_sql("""
+                SELECT f.id_factura,
+                       COALESCE(NULLIF(TRIM(COALESCE(f.serie,'') || '-' || COALESCE(f.folio,'')),'-'), f.uuid, 'FACT-' || f.id_factura) as folio_display,
+                       e.nombre as cliente,
+                       ROUND(f.monto_total, 2) as total_factura,
+                       ROUND(COALESCE(SUM(pg.monto_pagado), 0), 2) as total_pagado,
+                       ROUND(f.monto_total - COALESCE(SUM(pg.monto_pagado), 0), 2) as saldo,
+                       f.moneda,
+                       f.fecha_emision
+                FROM facturas f
+                JOIN ordenes_compra oc ON oc.id_oc = f.id_oc
+                JOIN oportunidades o ON o.id_oportunidad = oc.id_oportunidad
+                JOIN prospectos p ON p.id_prospecto = o.id_prospecto
+                JOIN empresas e ON e.id_empresa = p.id_empresa
+                LEFT JOIN pagos pg ON pg.id_factura = f.id_factura
+                GROUP BY f.id_factura, e.nombre, f.monto_total, f.moneda, f.fecha_emision
+                HAVING saldo > 0.005
+                ORDER BY f.fecha_emision ASC
+            """, con)
+            con.close()
+
+            if len(facturas_pendientes) == 0:
+                st.success("✅ No hay facturas con saldo pendiente")
+            else:
+                if "cobranza_fact_sel_id" not in st.session_state:
+                    st.session_state["cobranza_fact_sel_id"] = int(facturas_pendientes.iloc[0]["id_factura"])
+                fact_cobr_ids = [int(r["id_factura"]) for _, r in facturas_pendientes.iterrows()]
+                fact_cobr_map = {int(r["id_factura"]): r for _, r in facturas_pendientes.iterrows()}
+                if st.session_state["cobranza_fact_sel_id"] not in fact_cobr_ids:
+                    st.session_state["cobranza_fact_sel_id"] = fact_cobr_ids[0]
+
+                id_fact_cobr = st.selectbox(
+                    "Factura *",
+                    fact_cobr_ids,
+                    format_func=lambda k: (
+                        f"{fact_cobr_map[k]['folio_display']} · {fact_cobr_map[k]['cliente']} · "
+                        f"Saldo: ${fact_cobr_map[k]['saldo']:,.2f} {fact_cobr_map[k]['moneda']}"
+                    ),
+                    key="cobranza_fact_sel_id",
+                )
+                fact_cobr_ctx = fact_cobr_map[id_fact_cobr]
+                st.caption(
+                    f"Total factura: **${fact_cobr_ctx['total_factura']:,.2f}** · "
+                    f"Pagado: **${fact_cobr_ctx['total_pagado']:,.2f}** · "
+                    f"Saldo pendiente: **${fact_cobr_ctx['saldo']:,.2f} {fact_cobr_ctx['moneda']}**"
+                )
+
+                with st.form("form_pago"):
+                    fecha_pago = st.date_input("Fecha de pago *", value=date.today())
+                    monto_pago = st.number_input(
+                        "Monto recibido *",
+                        min_value=0.01,
+                        max_value=float(fact_cobr_ctx["saldo"]),
+                        value=float(fact_cobr_ctx["saldo"]),
+                        step=100.0,
+                    )
+                    metodo_pago = st.selectbox(
+                        "Método de pago",
+                        ["Transferencia", "Cheque", "Efectivo", "Tarjeta", "Otro"]
+                    )
+                    referencia_pago = st.text_input("Referencia / Número de transferencia")
+                    notas_pago = st.text_area("Notas", height=68)
+                    submit_pago = st.form_submit_button("💳 Registrar Pago")
+
+                    if submit_pago:
+                        if monto_pago <= 0:
+                            st.error("❌ El monto debe ser mayor a 0.")
+                        elif monto_pago > float(fact_cobr_ctx["saldo"]) + 0.01:
+                            st.error(f"❌ El monto excede el saldo pendiente (${fact_cobr_ctx['saldo']:,.2f}).")
+                        else:
+                            con = conectar()
+                            cur = con.cursor()
+                            cur.execute("""
+                                INSERT INTO pagos (id_factura, fecha_pago, monto_pagado, moneda, metodo_pago, referencia, notas)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """, (id_fact_cobr, fecha_pago.isoformat(), monto_pago,
+                                  fact_cobr_ctx["moneda"], metodo_pago, referencia_pago, notas_pago))
+                            con.commit()
+                            registrar_evento(con, "factura", id_fact_cobr, "PAGO",
+                                            f"Pago ${monto_pago:,.2f} via {metodo_pago} ref:{referencia_pago}",
+                                            usuario=get_usuario_activo())
+                            con.close()
+                            st.success(f"✅ Pago de ${monto_pago:,.2f} registrado")
+                            st.session_state.pop("cobranza_fact_sel_id", None)
+                            st.rerun()
+
+        with col2:
+            st.markdown("**Histórico de pagos:**")
+            con = conectar()
+            historial_pagos = pd.read_sql("""
+                SELECT pg.id_pago, pg.fecha_pago,
+                       COALESCE(NULLIF(TRIM(COALESCE(f.serie,'') || '-' || COALESCE(f.folio,'')),'-'),
+                                f.uuid, 'FACT-' || f.id_factura) as factura,
+                       e.nombre as cliente,
+                       ROUND(pg.monto_pagado, 2) as monto, pg.moneda,
+                       pg.metodo_pago, pg.referencia
+                FROM pagos pg
+                JOIN facturas f ON f.id_factura = pg.id_factura
+                JOIN ordenes_compra oc ON oc.id_oc = f.id_oc
+                JOIN oportunidades o ON o.id_oportunidad = oc.id_oportunidad
+                JOIN prospectos p ON p.id_prospecto = o.id_prospecto
+                JOIN empresas e ON e.id_empresa = p.id_empresa
+                ORDER BY pg.fecha_pago DESC
+                LIMIT 20
+            """, con)
+            con.close()
+            if len(historial_pagos) > 0:
+                st.dataframe(historial_pagos, width="stretch", hide_index=True)
+            else:
+                st.info("No hay pagos registrados")
 
 
 # ================================================================
@@ -2672,14 +2911,38 @@ elif menu == "📊 Pipeline Visual":
     if CFDI_DISPONIBLE:
         try:
             cfdi_valido, _ = validar_configuracion_cfdi()
-        except Exception:
+        except Exception as _e_cfdi_pipe:
+            import sys
+            print(f"⚠️ [pipeline] Error al validar CFDI: {_e_cfdi_pipe}", file=sys.stderr)
             cfdi_valido = False
 
     metricas_helper = obtener_metricas_helper(con)
     recomendaciones_helper = construir_recomendaciones_helper(metricas_helper, cfdi_valido)
-    score_oportunidades = obtener_scores_oportunidad(con)
-    score_oportunidades = enriquecer_scores_con_historial(con, score_oportunidades)
-    persistir_scores_oportunidad(con, score_oportunidades)
+
+    # Cache de scores: solo recalcula una vez por sesión o si el usuario fuerza refresh.
+    # Evita recalcular + persistir en cada render cuando no hay cambios.
+    _score_cache_key = "pipeline_scores_cache"
+    _score_ts_key = "pipeline_scores_ts"
+    _score_ttl_seconds = 120  # recalcula si pasaron más de 2 minutos o se forzó
+
+    _ahora = datetime.now().timestamp()
+    _forzar = st.button("🔄 Recalcular scores", key="btn_recalcular_scores",
+                        help="Fuerza recalcular los scores de todas las oportunidades ahora.")
+    _cache_vencido = (
+        _score_cache_key not in st.session_state
+        or _ahora - st.session_state.get(_score_ts_key, 0) > _score_ttl_seconds
+    )
+
+    if _forzar or _cache_vencido:
+        score_oportunidades = obtener_scores_oportunidad(con)
+        score_oportunidades = enriquecer_scores_con_historial(con, score_oportunidades)
+        persistir_scores_oportunidad(con, score_oportunidades)
+        st.session_state[_score_cache_key] = score_oportunidades
+        st.session_state[_score_ts_key] = _ahora
+    else:
+        score_oportunidades = st.session_state[_score_cache_key]
+        _hace = int(_ahora - st.session_state[_score_ts_key])
+        st.caption(f"ℹ️ Scores cargados desde caché (hace {_hace}s). Usa 🔄 para actualizar.")
 
     st.subheader("🤖 Helper interno del flujo")
     st.caption("Recomendaciones determinísticas calculadas con datos reales del pipeline, sin LLM.")
