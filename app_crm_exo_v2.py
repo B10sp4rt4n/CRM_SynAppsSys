@@ -1640,13 +1640,24 @@ elif menu == "🏗️ N1: Identidad":
                         if submit_p:
                             con = conectar()
                             cur = con.cursor()
-                            cur.execute("INSERT INTO prospectos (id_empresa, id_contacto, origen, estado) VALUES (?, ?, ?, 'Activo')",
-                                       (id_emp, id_cont, origen))
-                            con.commit()
-                            registrar_evento(con, "prospecto", cur.lastrowid, "CREAR", f"Prospecto: {emp_sel}")
-                            con.close()
-                            st.success(f"✅ Prospecto generado (ID: {cur.lastrowid})")
-                            st.rerun()
+                            cur.execute(
+                                "SELECT COUNT(*) as total FROM prospectos WHERE id_empresa=? AND id_contacto=?",
+                                (id_emp, id_cont)
+                            )
+                            if cur.fetchone()["total"] > 0:
+                                con.close()
+                                st.error(
+                                    f"❌ Ya existe un prospecto o cliente con '{emp_sel}' y ese contacto. "
+                                    "Si necesitas una nueva oportunidad, créala directamente en N2."
+                                )
+                            else:
+                                cur.execute("INSERT INTO prospectos (id_empresa, id_contacto, origen, estado) VALUES (?, ?, ?, 'Activo')",
+                                           (id_emp, id_cont, origen))
+                                con.commit()
+                                registrar_evento(con, "prospecto", cur.lastrowid, "CREAR", f"Prospecto: {emp_sel}")
+                                con.close()
+                                st.success(f"✅ Prospecto generado (ID: {cur.lastrowid})")
+                                st.rerun()
             
             with col2:
                 con = conectar()
@@ -2214,10 +2225,12 @@ elif menu == "💰 N3: Facturación":
 
         with col1:
             con = conectar()
-            # Incluye cotización aprobada como referencia y advierte si no hay ninguna
+            # Muestra todas las oportunidades Ganadas — oc_recibida ya no bloquea el acceso
+            # El flag se setea automáticamente al registrar la primera OC desde este formulario
             opor_ganadas = pd.read_sql("""
                 SELECT o.id_oportunidad, o.nombre, ROUND(o.monto_estimado, 2) as monto,
                        e.nombre as empresa,
+                       o.oc_recibida,
                        COUNT(DISTINCT c.id_cotizacion) as total_cots,
                        MAX(CASE WHEN c.estado = 'Aprobada' THEN c.monto_total END) as monto_cotizacion_aprobada,
                        MAX(CASE WHEN c.estado = 'Aprobada' THEN c.moneda END) as moneda_cotizacion_aprobada,
@@ -2227,15 +2240,14 @@ elif menu == "💰 N3: Facturación":
                 JOIN empresas e ON e.id_empresa = p.id_empresa
                 LEFT JOIN cotizaciones c ON c.id_oportunidad = o.id_oportunidad
                 LEFT JOIN ordenes_compra oc ON oc.id_oportunidad = o.id_oportunidad
-                WHERE o.etapa = 'Ganada' AND o.oc_recibida = 1
-                GROUP BY o.id_oportunidad, o.nombre, o.monto_estimado, e.nombre
+                WHERE o.etapa = 'Ganada'
+                GROUP BY o.id_oportunidad, o.nombre, o.monto_estimado, e.nombre, o.oc_recibida
                 ORDER BY o.fecha_creacion DESC
             """, con)
             con.close()
 
             if len(opor_ganadas) == 0:
-                st.warning("⚠️ No hay oportunidades ganadas con OC pendientes de registrar")
-                st.caption("Pasos necesarios: N2 → Marcar como Ganada → Marcar OC Recibida")
+                st.warning("⚠️ No hay oportunidades ganadas. Primero cierra una en N2.")
             else:
                 # Selector de oportunidad fuera del form para mostrar contexto dinámico
                 if "oc_opor_sel_id" not in st.session_state:
@@ -2302,7 +2314,15 @@ elif menu == "💰 N3: Facturación":
                                 VALUES (?, ?, ?, ?, ?)
                             """, (id_opor, numero_oc, fecha_oc.isoformat(), monto_oc, moneda_oc))
                             con.commit()
-                            registrar_evento(con, "orden_compra", cur.lastrowid, "CREAR", f"OC {numero_oc} - ${monto_oc} {moneda_oc}")
+                            oc_id_nuevo = cur.lastrowid
+                            # Fix #5: setear oc_recibida=1 automáticamente al registrar la primera OC
+                            # Elimina la necesidad de hacerlo manualmente desde N2
+                            cur.execute(
+                                "UPDATE oportunidades SET oc_recibida=1 WHERE id_oportunidad=? AND oc_recibida=0",
+                                (id_opor,)
+                            )
+                            con.commit()
+                            registrar_evento(con, "orden_compra", oc_id_nuevo, "CREAR", f"OC {numero_oc} - ${monto_oc} {moneda_oc}")
                             con.close()
                             st.success(f"✅ OC '{numero_oc}' registrada por ${monto_oc:,.2f} {moneda_oc}")
                             st.rerun()
